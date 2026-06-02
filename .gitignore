@@ -1,0 +1,11 @@
+*.onnx
+*.pt
+*.bag
+*.db3
+__pycache__/
+.vscode/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ml/data/
+*.pyc
