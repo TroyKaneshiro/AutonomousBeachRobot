@@ -9,3 +9,12 @@ ros2_ws/install/
 ros2_ws/log/
 ml/data/
 *.pyc
+# TACO dataset — too large
+ml/TACO/
+
+# Training batch visualizations — generated, not needed
+ml/runs/detect/*/train_batch*.jpg
+ml/runs/detect/*/val_batch*.jpg
+
+# Keep results and best weights but not last
+ml/runs/detect/*/weights/last.pt
