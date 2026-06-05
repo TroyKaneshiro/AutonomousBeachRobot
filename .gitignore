@@ -18,3 +18,19 @@ ml/runs/detect/*/val_batch*.jpg
 
 # Keep results and best weights but not last
 ml/runs/detect/*/weights/last.pt
+# Training runs — keep results but not images
+ml/runs/detect/*/train_batch*.jpg
+ml/runs/detect/*/val_batch*.jpg
+ml/runs/detect/*/weights/last.pt
+ml/runs/
+
+# Dataset
+ml/TACO/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
