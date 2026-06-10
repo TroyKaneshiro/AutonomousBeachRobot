@@ -14,16 +14,12 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='ttkan',
-    maintainer_email='ttkan@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    maintainer_email='tkaneshiro2006@gmail.com',
+    description='High-level operator interface and session coordinator',
+    license='Apache-2.0',
     entry_points={
         'console_scripts': [
+            'coordinator = mission_control.coordinator:main',
         ],
     },
 )

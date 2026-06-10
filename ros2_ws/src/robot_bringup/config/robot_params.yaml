@@ -1,0 +1,26 @@
+# Tunable parameters for all Autonomous Beach Robot nodes.
+# Values here are applied at launch; override any individual param via
+# ros2 launch robot_bringup beach_robot.launch.py <arg>:=<value>
+
+trash_detector:
+  ros__parameters:
+    # model_path is set from the launch argument — not hardcoded here.
+    confidence_threshold: 0.15  # raise to ~0.35 for field use; lowered for testing
+    yolo_interval: 0.1          # seconds between YOLO calls (~10 fps)
+    frame_width: 640
+    frame_height: 480
+
+mission_fsm:
+  ros__parameters:
+    kp: 0.002                   # visual servo gain: angular_z = -kp * pixel_error
+    approach_speed: 0.2         # m/s forward speed in TRACK state
+    scan_angular_speed: 0.3     # rad/s rotation rate in SCAN state
+    pickup_area_threshold: 0.15 # normalised bbox area (bbox_px/frame_px) → PICKUP
+    detection_conf_threshold: 0.45
+    track_loss_timeout: 0.5     # seconds of silence before TRACK → SCAN fallback
+    calibrate_duration: 1.5     # seconds to hold still in CALIBRATE
+    stuck_timeout: 5.0          # seconds of no odometry movement before STUCK
+    battery_cutoff_voltage: 10.5  # 3S LiPo hard cutoff (10.5 V = 3.5 V/cell)
+    frame_width: 640
+    frame_height: 480
+    # csv_log_path is set from the launch argument — not hardcoded here.

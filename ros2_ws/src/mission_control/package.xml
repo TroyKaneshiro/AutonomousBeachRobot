@@ -3,9 +3,13 @@
 <package format="3">
   <name>mission_control</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ttkan@todo.todo">ttkan</maintainer>
-  <license>TODO: License declaration</license>
+  <description>High-level operator interface and session coordinator</description>
+  <maintainer email="tkaneshiro2006@gmail.com">ttkan</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

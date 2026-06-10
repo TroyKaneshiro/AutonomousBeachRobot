@@ -3,9 +3,18 @@
 <package format="3">
   <name>robot_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ttkan@todo.todo">ttkan</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Launch and configuration files to bring up all Autonomous Beach Robot nodes</description>
+  <maintainer email="tkaneshiro2006@gmail.com">ttkan</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- runtime deps: nodes we launch -->
+  <exec_depend>perception</exec_depend>
+  <exec_depend>v1_navigator</exec_depend>
+  <exec_depend>mission_control</exec_depend>
+
+  <!-- launch infrastructure -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

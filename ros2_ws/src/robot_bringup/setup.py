@@ -10,20 +10,16 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/beach_robot.launch.py']),
+        ('share/' + package_name + '/config', ['config/robot_params.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='ttkan',
-    maintainer_email='ttkan@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    maintainer_email='tkaneshiro2006@gmail.com',
+    description='Launch and configuration files to bring up all Autonomous Beach Robot nodes',
+    license='Apache-2.0',
     entry_points={
-        'console_scripts': [
-        ],
+        'console_scripts': [],
     },
 )
