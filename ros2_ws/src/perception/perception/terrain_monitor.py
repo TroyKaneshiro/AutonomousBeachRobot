@@ -29,6 +29,7 @@ class TerrainMonitor(Node):
         self.hsv_lower = [10, 20, 150] #tune at location
         self.hsv_upper = [25, 255, 255] #tune at location
         self.terrain_safe = True
+        self.imu_safe = True
 
         # IMU calibration state
         self.imu_calibrated = False
@@ -54,14 +55,16 @@ class TerrainMonitor(Node):
             ax = msg.linear_acceleration.x
             az = msg.linear_acceleration.z
             current_pitch = math.atan2(ax, az)   # actual pitch in radians
-            if abs(current_pitch) > self.pitch_threshold: #stop if change in pitch is great (steep slope or decline)
-                self.publisher.publish(String(data="STOP_IMU"))
-            # Phase 2: check vibration spike
-            current_variance = np.var(list(self.accel_z_history)) #stop if increase in vibration - different type of ground
-            if current_variance > self.baseline_variance * self.vibration_multiplier:
+            #current ground not safe if pitch or vibrations too high
+            safe = (abs(current_pitch) < self.pitch_threshold and
+             current_variance < self.baseline_variance * self.vibration_multiplier) 
+            if self.imu_safe and not safe: #terrain was safe, now is NOT safe - stop 
+                self.imu_safe = False 
                 self.publisher.publish(String(data='STOP_IMU'))
-            current_vibration = msg.linear_acceleration.z
-            # Publish STOP_IMU if either triggers
+            elif not self.imu_safe and safe: #terrain was NOT safe, now is 
+                self.imu_safe = True
+                self.publisher.publish(String(data='CLEAR'))
+            
 
     def camera_callback(self, msg):
         # Throttle to 10fps
@@ -71,11 +74,6 @@ class TerrainMonitor(Node):
         self.last_camera_time = current_time
         # Convert to OpenCV
         frame = self.cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
-        # Extract bottom-third ROI
-        # HSV threshold for sand
-        roi = frame[int(frame.shape[0] * 0.67):, :]   # bottom third
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array(self.hsv_lower), np.array(self.hsv_upper))
         # Publish STOP_CAM if sand_ratio drops below threshold
         # Publish CLEAR if terrain looks safe
         safe, ratio = self.is_sand(frame)
