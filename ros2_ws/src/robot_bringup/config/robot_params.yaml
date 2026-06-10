@@ -10,6 +10,14 @@ trash_detector:
     frame_width: 640
     frame_height: 480
 
+terrain_monitor:
+  ros__parameters:
+    pitch_threshold: 0.15       # rad (~8.6°) — tune if false positives on slopes
+    vibration_multiplier: 2.5   # variance above baseline triggers STOP_IMU
+    sand_ratio_threshold: 0.5   # fraction of bottom-ROI that must be sand — CALIBRATE ON-SITE
+    hsv_lower: [10, 20, 150]    # HSV lower bound for sand colour — CALIBRATE ON-SITE
+    hsv_upper: [25, 255, 255]   # HSV upper bound for sand colour — CALIBRATE ON-SITE
+
 mission_fsm:
   ros__parameters:
     kp: 0.002                   # visual servo gain: angular_z = -kp * pixel_error

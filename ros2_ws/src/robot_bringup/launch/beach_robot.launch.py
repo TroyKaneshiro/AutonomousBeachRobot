@@ -12,20 +12,17 @@ def generate_launch_description():
     params_file = os.path.join(pkg_share, 'config', 'robot_params.yaml')
 
     # --- Launch arguments ---
-    # model_path differs per machine; make it easy to override without editing
-    # source files or the params YAML.
     model_path_arg = DeclareLaunchArgument(
         'model_path',
         default_value='/home/ttkan/AutonomousBeachRobot/ml/models/trash_v1_best.onnx',
         description='Absolute path to the YOLO ONNX model file',
     )
-    # CSV log written by mission_fsm on each PICKUP event.
-    log_path_arg = DeclareLaunchArgument(
-        'log_path',
+    # mission_fsm PICKUP log — one row per flagged item.
+    fsm_log_path_arg = DeclareLaunchArgument(
+        'fsm_log_path',
         default_value='trash_detections_log.csv',
-        description='Path for the CSV detection log',
+        description='CSV path for mission_fsm PICKUP events',
     )
-
     # --- Nodes ---
     trash_detector_node = Node(
         package='perception',
@@ -33,10 +30,16 @@ def generate_launch_description():
         name='trash_detector',
         parameters=[
             params_file,
-            # Override model_path from the launch arg so it can be set at
-            # the command line without touching the params YAML.
             {'model_path': LaunchConfiguration('model_path')},
         ],
+        output='screen',
+    )
+
+    terrain_monitor_node = Node(
+        package='perception',
+        executable='terrain_monitor',
+        name='terrain_monitor',
+        parameters=[params_file],
         output='screen',
     )
 
@@ -46,7 +49,7 @@ def generate_launch_description():
         name='mission_fsm',
         parameters=[
             params_file,
-            {'csv_log_path': LaunchConfiguration('log_path')},
+            {'csv_log_path': LaunchConfiguration('fsm_log_path')},
         ],
         output='screen',
     )
@@ -60,8 +63,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         model_path_arg,
-        log_path_arg,
+        fsm_log_path_arg,
         trash_detector_node,
+        terrain_monitor_node,
         mission_fsm_node,
         coordinator_node,
     ])
