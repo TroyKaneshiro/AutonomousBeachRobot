@@ -20,6 +20,7 @@ setup(
         'console_scripts': [
             'trash_detector = perception.trash_detector:main',
             'terrain_monitor = perception.terrain_monitor:main',
+            'debug_detector = perception.debug_detector:main',
         ],
     },
 )

@@ -23,6 +23,11 @@ def generate_launch_description():
         default_value='trash_detections_log.csv',
         description='CSV path for mission_fsm PICKUP events',
     )
+    sim_mode_arg = DeclareLaunchArgument(
+        'sim_mode',
+        default_value='false',
+        description='Set true when running with fake_hardware.py — disables STUCK watchdog',
+    )
     # --- Nodes ---
     trash_detector_node = Node(
         package='perception',
@@ -50,6 +55,7 @@ def generate_launch_description():
         parameters=[
             params_file,
             {'csv_log_path': LaunchConfiguration('fsm_log_path')},
+            {'sim_mode': LaunchConfiguration('sim_mode')},
         ],
         output='screen',
     )
@@ -64,6 +70,7 @@ def generate_launch_description():
     return LaunchDescription([
         model_path_arg,
         fsm_log_path_arg,
+        sim_mode_arg,
         trash_detector_node,
         terrain_monitor_node,
         mission_fsm_node,

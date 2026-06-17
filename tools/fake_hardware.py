@@ -22,9 +22,9 @@ Then in separate terminals:
 """
 
 import math
+import random
 
 import rclpy
-from geometry_msgs.msg import Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
@@ -54,8 +54,9 @@ class FakeHardware(Node):
             '/battery_voltage, /imu/data')
 
     def _publish_odom(self):
-        # Increment x by 1 cm/tick so the FSM always sees movement.
-        self._odom_x += 0.01
+        # 2 cm/tick — strictly greater than the FSM's 1 cm movement threshold.
+        # (0.01 increments would hit the > 0.01 boundary and never register.)
+        self._odom_x += 0.02
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -92,11 +93,15 @@ class FakeHardware(Node):
         msg = Imu()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'imu'
-        # Flat ground: gravity along -Z, negligible X/Y acceleration.
-        # atan2(ax, az) = atan2(0, -9.81) ≈ 0 rad pitch — within threshold.
-        msg.linear_acceleration.x = 0.0
-        msg.linear_acceleration.y = 0.0
-        msg.linear_acceleration.z = -9.81
+        # Flat ground: gravity along -Z with small gaussian noise (~0.05 m/s² std).
+        # The noise is required — a perfectly constant signal gives baseline_variance=0,
+        # making the terrain_monitor variance check (current < baseline * multiplier)
+        # resolve to (0 < 0) = False and fire STOP_IMU immediately after calibration.
+        msg.linear_acceleration.x = random.gauss(0.0, 0.01)
+        msg.linear_acceleration.y = random.gauss(0.0, 0.01)
+        # +9.81, not -9.81 — terrain_monitor uses atan2(ax, az), which gives 0
+        # for flat ground only when az is positive. Negative az gives pitch ≈ π.
+        msg.linear_acceleration.z = random.gauss(9.81, 0.05)
         msg.orientation.w = 1.0
         # Mark covariance as unknown (-1 diagonal) — terrain_monitor uses raw accel
         msg.orientation_covariance[0] = -1.0

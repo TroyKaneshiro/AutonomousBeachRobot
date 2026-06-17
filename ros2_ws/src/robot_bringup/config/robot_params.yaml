@@ -31,4 +31,5 @@ mission_fsm:
     battery_cutoff_voltage: 10.5  # 3S LiPo hard cutoff (10.5 V = 3.5 V/cell)
     frame_width: 640
     frame_height: 480
+    sim_mode: false              # set true when running with fake_hardware.py (disables STUCK watchdog)
     # csv_log_path is set from the launch argument — not hardcoded here.

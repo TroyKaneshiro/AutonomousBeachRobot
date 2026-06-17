@@ -1,36 +1,33 @@
+# Model weights
 *.onnx
 *.pt
+
+# ROS 2 bag files
 *.bag
 *.db3
-__pycache__/
-.vscode/
-ros2_ws/build/
-ros2_ws/install/
-ros2_ws/log/
-ml/data/
-*.pyc
-# TACO dataset — too large
-ml/TACO/
-
-# Training batch visualizations — generated, not needed
-ml/runs/detect/*/train_batch*.jpg
-ml/runs/detect/*/val_batch*.jpg
-
-# Keep results and best weights but not last
-ml/runs/detect/*/weights/last.pt
-# Training runs — keep results but not images
-ml/runs/detect/*/train_batch*.jpg
-ml/runs/detect/*/val_batch*.jpg
-ml/runs/detect/*/weights/last.pt
-ml/runs/
-
-# Dataset
-ml/TACO/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
+
+# IDE
+.vscode/
+
+# colcon build artifacts — matches build/install/log at any depth (repo root or ros2_ws/)
+build/
+install/
+log/
+
+# Runtime output — GPS/detection CSV logs written by mission_fsm
+*.csv
+
+# ML dataset — too large for git
+ml/data/
+ml/TACO/
+
+# ML training runs — keep only the final model in ml/models/
+ml/runs/
 
 # Virtual environments
 venv/

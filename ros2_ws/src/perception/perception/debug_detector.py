@@ -1,6 +1,3 @@
-# MOVED to ros2_ws/src/perception/perception/debug_detector.py
-# This copy is kept for reference only — run via: ros2 run perception debug_detector
-
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image

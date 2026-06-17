@@ -174,7 +174,6 @@ class Coordinator(Node):
         msg.data = json.dumps(payload)
         self.status_pub.publish(msg)
 
-
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
