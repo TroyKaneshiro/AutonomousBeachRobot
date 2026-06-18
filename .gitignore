@@ -25,6 +25,8 @@ log/
 # ML dataset — too large for git
 ml/data/
 ml/TACO/
+ml/merged/
+ml/roboflow_trash/
 
 # ML training runs — keep only the final model in ml/models/
 ml/runs/

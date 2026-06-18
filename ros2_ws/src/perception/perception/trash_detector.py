@@ -30,9 +30,9 @@ class TrashDetector(Node):
 
         # Declare all tunable values as ROS 2 parameters so they can be
         # overridden from a launch file without editing this source file.
-        self.declare_parameter('model_path', '/home/ttkan/AutonomousBeachRobot/ml/models/trash_v1_best.onnx')
+        self.declare_parameter('model_path', '/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx')
         self.declare_parameter('confidence_threshold', 0.15) #lowered for testing purposes
-        self.declare_parameter('yolo_interval', 0.1)   # seconds between YOLO calls
+        self.declare_parameter('yolo_interval', 0.45)   # seconds between YOLO calls
         self.declare_parameter('frame_width', 640)
         self.declare_parameter('frame_height', 480)
 
