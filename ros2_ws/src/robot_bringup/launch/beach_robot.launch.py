@@ -14,7 +14,7 @@ def generate_launch_description():
     # --- Launch arguments ---
     model_path_arg = DeclareLaunchArgument(
         'model_path',
-        default_value='/home/ttkan/AutonomousBeachRobot/ml/models/trash_v1_best.onnx',
+        default_value='/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx',
         description='Absolute path to the YOLO ONNX model file',
     )
     # mission_fsm PICKUP log — one row per flagged item.
@@ -67,6 +67,22 @@ def generate_launch_description():
         output='screen',
     )
 
+    camera_node = Node(
+        package='v4l2_camera',
+        executable='v4l2_camera_node',
+        name='camera',
+        parameters=[{'image_size': [640, 480]}],
+        output='screen',
+    )
+
+    micro_ros_agent_node = Node(
+        package='micro_ros_agent',
+        executable='micro_ros_agent',
+        name='micro_ros_agent',
+        arguments=['serial', '--dev', '/dev/ttyUSB0', '-b', '115200'],
+        output='screen',
+    )
+
     return LaunchDescription([
         model_path_arg,
         fsm_log_path_arg,
@@ -74,5 +90,7 @@ def generate_launch_description():
         trash_detector_node,
         terrain_monitor_node,
         mission_fsm_node,
-        coordinator_node,
+        coordinator_node,   
+        camera_node,
+        micro_ros_agent_node,
     ])

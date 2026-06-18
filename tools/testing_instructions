@@ -1,24 +1,10 @@
-Four terminals:
+For hardware-less testing simulation
 
-Terminal 1: fake hardware
-source /opt/ros/humble/setup.bash
-python3 ~/AutonomousBeachRobot/tools/fake_hardware.py
+First Terminal:
+ros2 launch robot_bringup sim.launch.py
+# or with a specific image:
+ros2 launch robot_bringup sim.launch.py image_path:=/home/ttkan/AutonomousBeachRobot/tools/test_trash2.jpg
 
-Terminal 2: fake camera feed
-source /opt/ros/humble/setup.bash
-python3 ~/AutonomousBeachRobot/tools/fake_camera.py ~/AutonomousBeachRobot/tools/test_trash.jpg
-
-Terminal 3: Runs node with FSM output
-cd ~/AutonomousBeachRobot/ros2_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch robot_bringup beach_robot.launch.py
-
-Terminal 4: Monitor and arm
-source /opt/ros/humble/setup.bash
-
-# Arm the robot
+Second Terminal:
 ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: START"
 
-# Watch FSM state changes and detections
-ros2 topic echo /mission_status
