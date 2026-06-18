@@ -46,6 +46,8 @@ def generate_launch_description():
         launch_arguments={
             'sim_mode': 'true',
             'model_path': LaunchConfiguration('model_path'),
+            'disable_imu_safety': 'true',
+            'disable_camera_safety': 'true',
         }.items(),
     )
 

@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -28,6 +29,16 @@ def generate_launch_description():
         default_value='false',
         description='Set true when running with fake_hardware.py — disables STUCK watchdog',
     )
+    disable_imu_safety_arg = DeclareLaunchArgument(
+        'disable_imu_safety',
+        default_value='false',
+        description='Mute STOP_IMU terrain events (indoor/desk testing)',
+    )
+    disable_camera_safety_arg = DeclareLaunchArgument(
+        'disable_camera_safety',
+        default_value='false',
+        description='Mute STOP_CAM terrain events (no sand in frame)',
+    )
     # --- Nodes ---
     trash_detector_node = Node(
         package='perception',
@@ -44,7 +55,12 @@ def generate_launch_description():
         package='perception',
         executable='terrain_monitor',
         name='terrain_monitor',
-        parameters=[params_file],
+        parameters=[
+            params_file,
+            {'sim_mode': LaunchConfiguration('sim_mode')},
+            {'disable_imu_safety': LaunchConfiguration('disable_imu_safety')},
+            {'disable_camera_safety': LaunchConfiguration('disable_camera_safety')},
+        ],
         output='screen',
     )
 
@@ -73,6 +89,7 @@ def generate_launch_description():
         name='camera',
         parameters=[{'image_size': [640, 480]}],
         output='screen',
+        condition=UnlessCondition(LaunchConfiguration('sim_mode')),
     )
 
     micro_ros_agent_node = Node(
@@ -81,12 +98,15 @@ def generate_launch_description():
         name='micro_ros_agent',
         arguments=['serial', '--dev', '/dev/ttyUSB0', '-b', '115200'],
         output='screen',
+        condition=UnlessCondition(LaunchConfiguration('sim_mode')),
     )
 
     return LaunchDescription([
         model_path_arg,
         fsm_log_path_arg,
         sim_mode_arg,
+        disable_imu_safety_arg,
+        disable_camera_safety_arg,
         trash_detector_node,
         terrain_monitor_node,
         mission_fsm_node,

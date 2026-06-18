@@ -4,7 +4,20 @@ First Terminal:
 ros2 launch robot_bringup sim.launch.py
 # or with a specific image:
 ros2 launch robot_bringup sim.launch.py image_path:=/home/ttkan/AutonomousBeachRobot/tools/test_trash2.jpg
+ros2 launch robot_bringup beach_robot.launch.py
+^ self-publishing fake data
 
 Second Terminal:
 ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: START"
+For publishing fake detection: ros2 topic pub --once /trash_detections std_msgs/msg/String "data: '{\"cx\": 320.0, \"cy\": 240.0, \"area\": 4500, \"conf\": 0.85, \"tracking\": false, \"bbox\": [290, 210, 350, 270]}'"
+Fake IMU data: ros2 topic pub -r 100 /imu/data sensor_msgs/msg/Imu "{linear_acceleration: {x: 0.0, y: 0.0, z: 9.8}}"
 
+# Indoor testing — disable both:
+ros2 launch robot_bringup beach_robot.launch.py \
+  disable_imu_safety:=true disable_camera_safety:=true
+
+# Disable only camera (outdoor but non-sand surface):
+ros2 launch robot_bringup beach_robot.launch.py disable_camera_safety:=true
+
+# sim.launch.py — both are automatically set to true, nothing extra needed:
+ros2 launch robot_bringup sim.launch.py image_path:=...

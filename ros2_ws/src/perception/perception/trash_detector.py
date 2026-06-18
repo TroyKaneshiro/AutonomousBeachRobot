@@ -112,7 +112,7 @@ class TrashDetector(Node):
                     # Re-initialise CSRT on the new best target.
                     # tracker.init() requires (x, y, w, h), not (x1, y1, x2, y2).
                     x1, y1, x2, y2 = bbox
-                    self.tracker = cv2.TrackerCSRT_create()
+                    self.tracker = cv2.TrackerCSRT.create()
                     self.tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
                     self.tracker_bbox = bbox
                     self.tracker_conf = conf
