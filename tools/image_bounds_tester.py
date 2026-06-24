@@ -1,8 +1,11 @@
 import cv2
+from pathlib import Path
+
 #Ensures that translation from TACO to YOLO dataset is correct visually
 # Adjust these paths to point to a test image and its translated text file
-IMAGE_PATH = "/home/ttkan/AutonomousBeachRobot/ml/TACO/images/train/000090.jpg"
-LABEL_PATH = "/home/ttkan/AutonomousBeachRobot/ml/TACO/labels/train/000090.txt"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+IMAGE_PATH = str(_REPO_ROOT / 'ml' / 'TACO' / 'images' / 'train' / '000090.jpg')
+LABEL_PATH = str(_REPO_ROOT / 'ml' / 'TACO' / 'labels' / 'train' / '000090.txt')
 
 img = cv2.imread(IMAGE_PATH)
 h, w, _ = img.shape

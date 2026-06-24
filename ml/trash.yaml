@@ -1,4 +1,4 @@
-path: /home/ttkan/AutonomousBeachRobot/ml/TACO
+path: TACO
 train: images/train
 val: images/val
 nc: 1

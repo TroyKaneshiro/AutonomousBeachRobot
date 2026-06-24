@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -6,9 +7,7 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchD
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
-# Hardcoded to the dev machine path — same convention as robot_params.yaml defaults.
-# Change this when deploying to the Pi.
-REPO_ROOT = '/home/ttkan/AutonomousBeachRobot'
+REPO_ROOT = str(Path(__file__).resolve().parents[4])
 TOOLS_DIR = os.path.join(REPO_ROOT, 'tools')
 
 

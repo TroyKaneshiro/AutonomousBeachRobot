@@ -1,18 +1,18 @@
 #tests model independently without ROS2 nodes being involved
 import cv2
+from pathlib import Path
 from ultralytics import YOLO
 
-# Load your exported ONNX model directly into the Ultralytics engine
-model = YOLO("/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx", task='detect')
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TOOLS_DIR = _REPO_ROOT / 'tools'
 
-# Run inference on a static test image file (use one the model hasn't seen)
-# Set a very low confidence threshold (0.1) to see if it sees ANY objects at all
-results = model("/home/ttkan/AutonomousBeachRobot/tools/test_trash2.jpg", conf=0.45)
+model = YOLO(str(_REPO_ROOT / 'ml' / 'models' / 'trash_v3_best.onnx'), task='detect')
 
-# Render and show the output array visually
+results = model(str(_TOOLS_DIR / 'test_trash2.jpg'), conf=0.45)
+
 annotated_frame = results[0].plot()
 
-output_path = "/home/ttkan/AutonomousBeachRobot/tools/result/test_result2.jpg"
+output_path = str(_TOOLS_DIR / 'result' / 'test_result2.jpg')
 cv2.imwrite(output_path, annotated_frame)
 print(f"Inference complete: Output saved to: {output_path}")
 

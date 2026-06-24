@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -12,9 +13,10 @@ def generate_launch_description():
     params_file = os.path.join(pkg_share, 'config', 'robot_params.yaml')
 
     # --- Launch arguments ---
+    _repo_root = str(Path(__file__).resolve().parents[4])
     model_path_arg = DeclareLaunchArgument(
         'model_path',
-        default_value='/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx',
+        default_value=os.path.join(_repo_root, 'ml', 'models', 'trash_v3_best.onnx'),
         description='Absolute path to the YOLO ONNX model file',
     )
     # mission_fsm PICKUP log — one row per flagged item.

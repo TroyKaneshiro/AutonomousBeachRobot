@@ -1,17 +1,21 @@
 # MOVED to ros2_ws/src/perception/perception/debug_detector.py
 # This copy is kept for reference only — run via: ros2 run perception debug_detector
 
+from pathlib import Path
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 
+_MODEL_PATH = str(Path(__file__).resolve().parents[1] / 'ml' / 'models' / 'trash_v1_best.onnx')
+
 class DebugDetector(Node):
     def __init__(self):
         super().__init__('debug_detector')
         self.bridge = CvBridge()
-        self.model = YOLO('/home/ttkan/AutonomousBeachRobot/ml/models/trash_v1_best.onnx', task='detect')
+        self.model = YOLO(_MODEL_PATH, task='detect')
         self.create_subscription(Image, '/camera/image_raw', self.cb, 10)
         self.count = 0
 
