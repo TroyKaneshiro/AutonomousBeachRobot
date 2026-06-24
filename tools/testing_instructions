@@ -1,10 +1,176 @@
-For hardware-less testing simulation
+AUTONOMOUS BEACH ROBOT — TESTING GUIDE
+========================================
 
-First Terminal:
-ros2 launch robot_bringup sim.launch.py
-# or with a specific image:
-ros2 launch robot_bringup sim.launch.py image_path:=/home/ttkan/AutonomousBeachRobot/tools/test_trash2.jpg
+MODES AT A GLANCE
+-----------------
+  A) Full sim          — no hardware at all; one command starts everything
+  B) Indoor / desk     — real camera, no ESP32/IMU; safety checks disabled
+  C) Hardware in loop  — real everything; standard production launch
+  D) Standalone tools  — model, detector, tracker tested outside ROS
 
-Second Terminal:
-ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: START"
 
+═══════════════════════════════════════════════════════════════
+MODE A — FULL SIMULATION (no hardware required)
+═══════════════════════════════════════════════════════════════
+
+Starts: fake_hardware.py + fake_camera.py + all ROS nodes
+Safety disabled automatically: IMU safety, camera safety
+FSM watchdog: STUCK watchdog still runs (fake odometry satisfies it)
+
+Terminal 1 — launch everything:
+  ros2 launch robot_bringup sim.launch.py
+
+  With a specific test image:
+  ros2 launch robot_bringup sim.launch.py \
+    image_path:=/home/ttkan/AutonomousBeachRobot/tools/test_trash2.jpg
+
+  With a different model:
+  ros2 launch robot_bringup sim.launch.py \
+    model_path:=/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx
+
+Terminal 2 — arm and drive state machine:
+
+  Start mission (CALIBRATE → SCAN):
+    ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: START"
+
+  Inject detection → SCAN will enter TRACK (area 4500 = small, not pickup size):
+    ros2 topic pub --once /trash_detections std_msgs/msg/String \
+      "data: '{\"cx\": 320.0, \"cy\": 240.0, \"area\": 4500, \"conf\": 0.85, \"tracking\": false, \"bbox\": [290, 210, 350, 270]}'"
+
+  Trigger PICKUP (norm_area = 50000/307200 ≈ 0.163, above 0.15 threshold):
+    ros2 topic pub --once /trash_detections std_msgs/msg/String \
+      "data: '{\"cx\": 320.0, \"cy\": 240.0, \"area\": 50000, \"conf\": 0.85, \"tracking\": true, \"bbox\": [100, 100, 540, 380]}'"
+
+  Simulate approaching trash (gradual area increase):
+    python3 /home/ttkan/AutonomousBeachRobot/tools/tracking_loop_tester.py
+
+  Stop mission:
+    ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: STOP"
+
+NOTE: sim_mode=true is set automatically by sim.launch.py — the TRACK loss
+timeout is disabled, so a single --once publication holds TRACK indefinitely.
+
+
+═══════════════════════════════════════════════════════════════
+MODE B — INDOOR / DESK TESTING (real camera, no ESP32)
+═══════════════════════════════════════════════════════════════
+
+Use when you have a USB camera but no robot hardware.
+Safety channels are disabled so IMU noise and non-sand images don't fire STOP events.
+STUCK watchdog stays active — supply fake odometry if you don't have wheel encoders.
+
+Terminal 1 — launch nodes (disable both safety channels):
+  ros2 launch robot_bringup beach_robot.launch.py \
+    disable_imu_safety:=true disable_camera_safety:=true
+
+  Disable only camera safety (e.g. outdoors but testing on concrete/grass):
+  ros2 launch robot_bringup beach_robot.launch.py disable_camera_safety:=true
+
+  Disable only IMU safety (surface is sand but IMU not calibrated):
+  ros2 launch robot_bringup beach_robot.launch.py disable_imu_safety:=true
+
+Terminal 2 — supply fake hardware data so the FSM doesn't stall:
+
+  Fake odometry (prevents STUCK watchdog firing — run continuously):
+    ros2 topic pub -r 50 /wheel/odometry nav_msgs/msg/Odometry \
+      "{pose: {pose: {position: {x: $(python3 -c 'import time; print(time.time()%100)'), y: 0.0}}}}"
+
+  Simpler: just run fake_hardware.py alongside:
+    python3 /home/ttkan/AutonomousBeachRobot/tools/fake_hardware.py
+
+  Fake IMU (if terrain_monitor is enabled and you need calibration data):
+    ros2 topic pub -r 100 /imu/data sensor_msgs/msg/Imu \
+      "{linear_acceleration: {x: 0.0, y: 0.0, z: 9.81}}"
+
+Terminal 3 — arm and test:
+  (same pub commands as Mode A)
+
+
+═══════════════════════════════════════════════════════════════
+MODE C — FULL HARDWARE (robot on the beach)
+═══════════════════════════════════════════════════════════════
+
+Requires: Raspberry Pi 5, ESP32 on /dev/ttyUSB0, USB camera, IMU, GPS
+
+  ros2 launch robot_bringup beach_robot.launch.py
+
+  Override model or log path:
+  ros2 launch robot_bringup beach_robot.launch.py \
+    model_path:=/home/ttkan/AutonomousBeachRobot/ml/models/trash_v3_best.onnx \
+    fsm_log_path:=/home/ttkan/run_logs/mission_$(date +%Y%m%d_%H%M%S).csv
+
+  Arm:
+    ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: START"
+
+  Emergency stop:
+    ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: STOP"
+
+
+═══════════════════════════════════════════════════════════════
+MODE D — STANDALONE TOOLS (no ROS nodes needed)
+═══════════════════════════════════════════════════════════════
+
+Test model inference directly (no ROS):
+  python3 /home/ttkan/AutonomousBeachRobot/tools/model_tester.py
+  # Output saved to tools/result/test_result2.jpg
+
+Run debug detector (requires /camera/image_raw topic to be live):
+  ros2 run perception debug_detector
+  # Prints detection count + confidence every 30 frames
+
+Test tracking loop injection (requires FSM running in sim mode):
+  python3 /home/ttkan/AutonomousBeachRobot/tools/tracking_loop_tester.py
+  # Gradually increases bbox area from 5000 to ~37000 to simulate approach
+
+
+═══════════════════════════════════════════════════════════════
+MONITORING — USEFUL TOPIC ECHOES
+═══════════════════════════════════════════════════════════════
+
+  FSM state transitions:
+    ros2 topic echo /mission_control/state
+
+  What the FSM is commanding:
+    ros2 topic echo /cmd_vel
+
+  Detections coming out of trash_detector:
+    ros2 topic echo /trash_detections
+
+  Terrain safety events (should be silent in sim/indoor modes):
+    ros2 topic echo /terrain_events
+
+  Battery voltage:
+    ros2 topic echo /battery_voltage
+
+  GPS fix:
+    ros2 topic echo /fix
+
+  List all active topics:
+    ros2 topic list
+
+
+═══════════════════════════════════════════════════════════════
+FSM STATE REFERENCE
+═══════════════════════════════════════════════════════════════
+
+  CALIBRATE  Hold still 1.5s — IMU locks variance baseline
+  SCAN       Rotate at 0.3 rad/s — waiting for detection conf ≥ 0.45
+  TRACK      Visual servo toward target — approach at 0.2 m/s
+  PICKUP     Log GPS+conf to CSV, reset tracker, return to SCAN
+  STUCK      No odometry movement for 5s — reverse 1.5s, rotate 45°, resume
+  LOW_BATTERY  Voltage < 10.5V — full stop, await operator
+
+  norm_area threshold for SCAN→TRACK: conf ≥ 0.45
+  norm_area threshold for TRACK→PICKUP: bbox_px / (640×480) ≥ 0.15
+    → area ≈ 46080 px² at 640×480
+
+
+═══════════════════════════════════════════════════════════════
+PARAMETER OVERRIDES (beach_robot.launch.py args)
+═══════════════════════════════════════════════════════════════
+
+  sim_mode              true/false   Disables STUCK watchdog + TRACK timeout
+  disable_imu_safety    true/false   Mutes STOP_IMU events
+  disable_camera_safety true/false   Mutes STOP_CAM events
+  model_path            string       Absolute path to .onnx model file
+  fsm_log_path          string       CSV path for PICKUP event log

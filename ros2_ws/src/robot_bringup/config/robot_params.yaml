@@ -17,6 +17,9 @@ terrain_monitor:
     sand_ratio_threshold: 0.5   # fraction of bottom-ROI that must be sand — CALIBRATE ON-SITE
     hsv_lower: [10, 20, 150]    # HSV lower bound for sand colour — CALIBRATE ON-SITE
     hsv_upper: [25, 255, 255]   # HSV upper bound for sand colour — CALIBRATE ON-SITE
+    sim_mode: false              # set true via sim.launch.py — suppresses terrain events
+    disable_imu_safety: false    # set true to mute STOP_IMU (indoor/desk testing)
+    disable_camera_safety: false # set true to mute STOP_CAM (no sand in view)
 
 mission_fsm:
   ros__parameters:

@@ -35,12 +35,18 @@ class TerrainMonitor(Node):
         self.declare_parameter('sand_ratio_threshold', 0.5)     # fraction of ROI
         self.declare_parameter('hsv_lower', [10, 20, 150])      # tune on-site
         self.declare_parameter('hsv_upper', [25, 255, 255])     # tune on-site
+        self.declare_parameter('sim_mode', False)
+        self.declare_parameter('disable_imu_safety', False)
+        self.declare_parameter('disable_camera_safety', False)
 
         self.pitch_threshold = self.get_parameter('pitch_threshold').value
         self.vibration_multiplier = self.get_parameter('vibration_multiplier').value
         self.sand_ratio_threshold = self.get_parameter('sand_ratio_threshold').value
         self.hsv_lower = list(self.get_parameter('hsv_lower').value)
         self.hsv_upper = list(self.get_parameter('hsv_upper').value)
+        self.sim_mode = self.get_parameter('sim_mode').value
+        self.disable_imu_safety = self.get_parameter('disable_imu_safety').value
+        self.disable_camera_safety = self.get_parameter('disable_camera_safety').value
 
         self.publisher = self.create_publisher(String, '/terrain_events', 10)
         self.create_subscription(Imu, '/imu/data', self.imu_callback, 10)
@@ -64,7 +70,16 @@ class TerrainMonitor(Node):
         self.last_camera_time = 0.0
         self.CAMERA_THROTTLE = 0.1
 
-        self.get_logger().info('TerrainMonitor started — calibrating IMU baseline')
+        disabled = []
+        if self.disable_imu_safety:
+            disabled.append('IMU')
+        if self.disable_camera_safety:
+            disabled.append('CAM')
+        self.get_logger().info(
+            'TerrainMonitor started — calibrating IMU baseline'
+            + (' [sim_mode: terrain events suppressed]' if self.sim_mode else '')
+            + (f' [safety disabled: {", ".join(disabled)}]' if disabled else '')
+        )
 
     def imu_callback(self, msg: Imu):
         self.accel_z_history.append(msg.linear_acceleration.z)
@@ -90,10 +105,12 @@ class TerrainMonitor(Node):
 
         if self.imu_safe and not safe:
             self.imu_safe = False
-            self.publisher.publish(String(data='STOP_IMU'))
+            if not self.sim_mode and not self.disable_imu_safety:
+                self.publisher.publish(String(data='STOP_IMU'))
         elif not self.imu_safe and safe:
             self.imu_safe = True
-            self.publisher.publish(String(data='CLEAR'))
+            if not self.sim_mode and not self.disable_imu_safety:
+                self.publisher.publish(String(data='CLEAR'))
 
     def camera_callback(self, msg: Image):
         now = time.monotonic()
@@ -106,10 +123,12 @@ class TerrainMonitor(Node):
 
         if self.terrain_safe and not safe:
             self.terrain_safe = False
-            self.publisher.publish(String(data='STOP_CAM'))
+            if not self.sim_mode and not self.disable_camera_safety:
+                self.publisher.publish(String(data='STOP_CAM'))
         elif not self.terrain_safe and safe:
             self.terrain_safe = True
-            self.publisher.publish(String(data='CLEAR'))
+            if not self.sim_mode and not self.disable_camera_safety:
+                self.publisher.publish(String(data='CLEAR'))
 
     def is_sand(self, frame):
         # Classify only the bottom third of the frame — terrain immediately ahead.

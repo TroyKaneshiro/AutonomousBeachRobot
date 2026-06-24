@@ -250,7 +250,9 @@ class MissionFSM(Node):
 
     def _tick_track(self, now):
         # Detection timeout: if /trash_detections goes silent, target is lost.
-        if now - self.last_detection_time > self.track_loss_timeout:
+        # Skipped in sim_mode so a single --once publication keeps TRACK active.
+        if (not self.sim_mode
+                and now - self.last_detection_time > self.track_loss_timeout):
             self.get_logger().info('Target lost (detection timeout) — returning to SCAN')
             self._stop()
             self._enter_state(State.SCAN)
