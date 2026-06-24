@@ -47,6 +47,12 @@ Terminal 2 — arm and drive state machine:
   Stop mission:
     ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: STOP"
 
+Optional — view the camera feed from your PC (no ROS2 needed on PC):
+  python3 /home/troykaneshiro/AutonomousBeachRobot/tools/stream_camera.py
+  # Then open http://<pi-ip>:8080 in any browser on the same network.
+  # Live YOLO bounding boxes are overlaid when detections are active.
+  # Custom port: python3 tools/stream_camera.py --port 9090
+
 NOTE: sim_mode=true is set automatically by sim.launch.py — the TRACK loss
 timeout is disabled, so a single --once publication holds TRACK indefinitely.
 
@@ -82,7 +88,10 @@ Terminal 2 — supply fake hardware data so the FSM doesn't stall:
     ros2 topic pub -r 100 /imu/data sensor_msgs/msg/Imu \
       "{linear_acceleration: {x: 0.0, y: 0.0, z: 9.81}}"
 
-Terminal 3 — arm and test:
+Terminal 3 — optional camera viewer (see Mode A for details):
+  python3 /home/troykaneshiro/AutonomousBeachRobot/tools/stream_camera.py
+
+Terminal 4 — arm and test:
   (same pub commands as Mode A)
 
 

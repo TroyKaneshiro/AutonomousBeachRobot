@@ -7,13 +7,13 @@
 #include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/string.h>
 
-// ─── HARDWARE CONSTANTS (fill these in once you have motor specs) ───
+// ─── HARDWARE CONSTANTS (fill in with motor specs) ───
 #define WHEEL_BASE        0.0f   // meters, center-to-center left/right wheels
 #define WHEEL_RADIUS      0.0f   // meters
 #define TICKS_PER_REV     0      // encoder ticks per wheel revolution (after gearbox)
 #define METERS_PER_TICK   (2.0f * M_PI * WHEEL_RADIUS / TICKS_PER_REV)
 
-// ─── PIN DEFINITIONS (assign once you decide wiring) ───
+// ─── PIN DEFINITIONS (assign) ───
 #define MOTOR_L_PWM   0    // GPIO for left motor PWM
 #define MOTOR_L_DIR   0    // GPIO for left motor direction
 #define MOTOR_R_PWM   0    // GPIO for right motor PWM
