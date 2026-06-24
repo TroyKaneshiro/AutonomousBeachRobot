@@ -41,6 +41,11 @@ def generate_launch_description():
         default_value='false',
         description='Mute STOP_CAM terrain events (no sand in frame)',
     )
+    disable_odom_safety_arg = DeclareLaunchArgument(
+        'disable_odom_safety',
+        default_value='false',
+        description='Disable STUCK watchdog (no wheel encoders connected)',
+    )
     # --- Nodes ---
     trash_detector_node = Node(
         package='perception',
@@ -74,6 +79,7 @@ def generate_launch_description():
             params_file,
             {'csv_log_path': LaunchConfiguration('fsm_log_path')},
             {'sim_mode': LaunchConfiguration('sim_mode')},
+            {'disable_odom_safety': LaunchConfiguration('disable_odom_safety')},
         ],
         output='screen',
     )
@@ -109,6 +115,7 @@ def generate_launch_description():
         sim_mode_arg,
         disable_imu_safety_arg,
         disable_camera_safety_arg,
+        disable_odom_safety_arg,
         trash_detector_node,
         terrain_monitor_node,
         mission_fsm_node,

@@ -73,6 +73,7 @@ class MissionFSM(Node):
         self.declare_parameter('frame_height', 480)
         self.declare_parameter('csv_log_path', 'trash_detections_log.csv')
         self.declare_parameter('sim_mode', False)
+        self.declare_parameter('disable_odom_safety', False)
 
         self.kp = self.get_parameter('kp').value
         self.approach_speed = self.get_parameter('approach_speed').value
@@ -87,6 +88,7 @@ class MissionFSM(Node):
         self.frame_height = self.get_parameter('frame_height').value
         self.csv_log_path = self.get_parameter('csv_log_path').value
         self.sim_mode = self.get_parameter('sim_mode').value
+        self.disable_odom_safety = self.get_parameter('disable_odom_safety').value
 
         # --- Publishers ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -129,6 +131,7 @@ class MissionFSM(Node):
         self.get_logger().info(
             f'MissionFSM started — state: CALIBRATE'
             + (' [sim_mode: STUCK watchdog disabled]' if self.sim_mode else '')
+            + (' [disable_odom_safety: STUCK watchdog disabled]' if self.disable_odom_safety else '')
         )
 
     # ------------------------------------------------------------------ #
@@ -199,8 +202,9 @@ class MissionFSM(Node):
 
         # STUCK watchdog: if we have been commanding motion and odometry
         # shows no movement for stuck_timeout seconds, trigger recovery.
-        # Bypassed in sim_mode — fake odometry may not model movement faithfully.
+        # Bypassed in sim_mode or when disable_odom_safety is set.
         if (not self.sim_mode
+                and not self.disable_odom_safety
                 and self.state in (State.SCAN, State.TRACK)
                 and self.cmd_vel_nonzero):
             if now - self.last_movement_time > self.stuck_timeout:
