@@ -1,6 +1,4 @@
-# Model weights
-*.onnx
-*.pt
+
 
 # ROS 2 bag files
 *.bag
