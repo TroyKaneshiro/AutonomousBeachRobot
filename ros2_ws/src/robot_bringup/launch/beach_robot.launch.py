@@ -95,10 +95,18 @@ def generate_launch_description():
         package='v4l2_camera',
         executable='v4l2_camera_node',
         name='camera',
-        parameters=[{'image_size': [640, 480]}],
-        output='screen',
+        parameters=[{
+         'video_device': '/dev/video0',
+         'image_size': [640, 480],
+         'pixel_format': 'YUYV',
+         'output_encoding': 'bgr8',
+        }],
+        remappings=[
+        ('/image_raw', '/camera/image_raw'),],
         condition=UnlessCondition(LaunchConfiguration('sim_mode')),
     )
+
+    
 
     micro_ros_agent_node = Node(
         package='micro_ros_agent',

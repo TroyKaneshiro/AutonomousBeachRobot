@@ -25,6 +25,7 @@ class StreamNode(Node):
         self._lock = threading.Lock()
         self._frame = None
         self._bbox = None
+        self._detection = None
         self._bridge = CvBridge()
         self.create_subscription(Image, '/camera/image_raw', self._on_image, 10)
         self.create_subscription(String, '/trash_detections', self._on_detection, 10)
@@ -40,6 +41,7 @@ class StreamNode(Node):
             data = json.loads(msg.data)
             with self._lock:
                 self._bbox = data.get('bbox')
+                self._detection = data
         except (json.JSONDecodeError, AttributeError):
             pass
 
@@ -49,12 +51,33 @@ class StreamNode(Node):
                 return None
             frame = self._frame.copy()
             bbox = self._bbox
+            detection = self._detection
 
         if bbox is not None:
             x1, y1, x2, y2 = (int(v) for v in bbox)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, 'trash', (x1, y1 - 6),
+            label = 'trash'
+            if detection:
+                conf = detection.get('conf', 0)
+                mode = 'tracking' if detection.get('tracking') else 'YOLO'
+                label = f'trash {conf:.2f} [{mode}]'
+            cv2.putText(frame, label, (x1, y1 - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
+        # Status bar at the bottom of the frame
+        h, w = frame.shape[:2]
+        if bbox is not None and detection:
+            conf = detection.get('conf', 0)
+            mode = 'TRACKING' if detection.get('tracking') else 'YOLO HIT'
+            status = f'{mode}  conf={conf:.2f}  cx={detection.get("cx", 0):.0f}  cy={detection.get("cy", 0):.0f}'
+            color = (0, 200, 255) if detection.get('tracking') else (0, 255, 0)
+        else:
+            status = 'Scanning — no detection'
+            color = (180, 180, 180)
+
+        cv2.rectangle(frame, (0, h - 28), (w, h), (30, 30, 30), -1)
+        cv2.putText(frame, status, (8, h - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
 
         ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         return bytes(buf) if ok else None

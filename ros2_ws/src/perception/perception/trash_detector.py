@@ -59,6 +59,10 @@ class TrashDetector(Node):
         self.create_subscription(
             Empty, '/trash_detector/reset', self.reset_callback, 10)
 
+        # Camera warmup: discard the first 30 frames while exposure adjusts.
+        self.warmup_frames = 0
+        self.warmup_done = False
+
         # CSRT tracker state. None means no active tracker; a new one is
         # created each time YOLO identifies a better target.
         self.tracker = None
@@ -78,6 +82,13 @@ class TrashDetector(Node):
         self.get_logger().info('Tracker reset — re-acquiring target')
 
     def image_callback(self, msg):
+        if not self.warmup_done:
+            self.warmup_frames += 1
+            if self.warmup_frames >= 30:
+                self.warmup_done = True
+                self.get_logger().info('Camera warmup complete')
+            return
+
         # Convert ROS image message to an OpenCV BGR frame.
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
 

@@ -82,7 +82,7 @@ Terminal 2 — supply fake hardware data so the FSM doesn't stall:
       "{pose: {pose: {position: {x: $(python3 -c 'import time; print(time.time()%100)'), y: 0.0}}}}"
 
   Simpler: just run fake_hardware.py alongside:
-    python3 /home/ttkan/AutonomousBeachRobot/tools/fake_hardware.py
+    python3 /home/troykaneshiro/AutonomousBeachRobot/tools/fake_hardware.py
 
   Fake IMU (if terrain_monitor is enabled and you need calibration data):
     ros2 topic pub -r 100 /imu/data sensor_msgs/msg/Imu \
