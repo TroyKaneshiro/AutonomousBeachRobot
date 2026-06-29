@@ -181,5 +181,7 @@ PARAMETER OVERRIDES (beach_robot.launch.py args)
   sim_mode              true/false   Disables STUCK watchdog + TRACK timeout
   disable_imu_safety    true/false   Mutes STOP_IMU events
   disable_camera_safety true/false   Mutes STOP_CAM events
+  disable_odom_safety   true/false   Mutes odomoetry safety fallback
   model_path            string       Absolute path to .onnx model file
   fsm_log_path          string       CSV path for PICKUP event log
+
