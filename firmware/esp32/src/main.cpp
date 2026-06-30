@@ -17,8 +17,10 @@
 #define MOTOR_L_DIR   26
 #define MOTOR_R_PWM   27
 #define MOTOR_R_DIR   14
-#define ENC_L_A       34
-#define ENC_L_B       35
+#define ENC_L_A       4
+#define ENC_L_B       5
+#define ENC_R_A       32
+#define ENC_R_B       33
 
 // ─── micro-ROS objects ───
 rcl_node_t node;
@@ -67,6 +69,7 @@ void cmd_vel_callback(const void* msg) {
     portENTER_CRITICAL(&mux);
     target_left  = (linear - angular * WHEEL_BASE / 2.0f) / WHEEL_RADIUS;
     target_right = (linear + angular * WHEEL_BASE / 2.0f) / WHEEL_RADIUS;
+    last_cmd_vel_ms = millis();
     portEXIT_CRITICAL(&mux);
 
     motor_event_msg.data.data = (char*)"CMD_VEL received";
@@ -90,12 +93,21 @@ void motor_task(void* pvParameters) {
     while (true) {
         float t_left, t_right;
         bool e_stop;
+        unsigned long last_cmd;
 
         portENTER_CRITICAL(&mux);
         t_left  = target_left;
         t_right = target_right;
         e_stop  = estop;
+        last_cmd = last_cmd_vel_ms;
         portEXIT_CRITICAL(&mux);
+
+        if(millis() - last_cmd > 1000) { 
+            analogWrite(MOTOR_L_PWM, 0); // If no command received in the last second, stop
+            analogWrite(MOTOR_R_PWM, 0);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
 
         if (e_stop) {
             analogWrite(MOTOR_L_PWM, 0);

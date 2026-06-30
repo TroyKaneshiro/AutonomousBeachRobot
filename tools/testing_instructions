@@ -8,6 +8,9 @@ MODES AT A GLANCE
   C) Hardware in loop  — real everything; standard production launch
   D) Standalone tools  — model, detector, tracker tested outside ROS
 
+  Allows Pi to connect with ESP32: 
+  ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 115200 -v4
+
 
 ═══════════════════════════════════════════════════════════════
 MODE A — FULL SIMULATION (no hardware required)
