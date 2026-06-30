@@ -116,6 +116,7 @@ class MissionFSM(Node):
 
         # --- Odometry / STUCK watchdog ---
         self.last_odom_pos = None          # (x, y) from previous odometry message
+        self.last_odom_yaw = 0.0           # heading from previous odometry message
         self.last_movement_time = time.monotonic()
         self.cmd_vel_nonzero = False       # True when publishing non-zero velocity
 
@@ -175,12 +176,19 @@ class MissionFSM(Node):
     def _on_odometry(self, msg):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         if self.last_odom_pos is not None:
             dx = x - self.last_odom_pos[0]
             dy = y - self.last_odom_pos[1]
-            if math.hypot(dx, dy) > 0.01:   # moved more than 1 cm
+            dyaw = abs(yaw - self.last_odom_yaw)
+            if dyaw > math.pi:
+                dyaw = 2.0 * math.pi - dyaw  # unwrap across ±π boundary
+            if math.hypot(dx, dy) > 0.01 or dyaw > 0.1:  # 1 cm OR ~6°
                 self.last_movement_time = time.monotonic()
         self.last_odom_pos = (x, y)
+        self.last_odom_yaw = yaw
 
     def _on_battery(self, msg):
         if msg.data < self.battery_cutoff_voltage:

@@ -11,6 +11,19 @@
 #define WHEEL_BASE        0.3f
 #define TICKS_PER_REV     1664
 #define METERS_PER_TICK   (2.0f * M_PI * WHEEL_RADIUS / TICKS_PER_REV)
+#define RADS_PER_TICK     (2.0f * M_PI / TICKS_PER_REV)
+
+// ─── PID CONSTANTS (starter values — tune on the bench) ───
+// Kp: PWM per (rad/s) error.  Too low → sluggish; too high → oscillation.
+// Ki: integrates out steady-state drag/friction offset.
+// Kd: set to 0 first; only raise if Kp+Ki loop is stable and you need faster settling.
+// INT_LIMIT: caps |Ki·integral| at ±100 PWM so the integrator can't saturate the output.
+// TASK_DT:   must match the vTaskDelay period at the bottom of motor_task (10 ms).
+#define PID_KP          50.0f
+#define PID_KI          20.0f
+#define PID_KD           0.5f
+#define PID_INT_LIMIT  100.0f
+#define MOTOR_TASK_DT    0.01f
 
 // ─── PIN DEFINITIONS ───
 #define MOTOR_L_PWM   25
@@ -43,19 +56,41 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 float target_left  = 0.0f;
 float target_right = 0.0f;
 bool  estop        = false;
-volatile long enc_left = 0;
+volatile long enc_left  = 0;
+volatile long enc_right = 0;
+volatile unsigned long last_cmd_vel_ms = 0;
 
 // ─── Odometry state ───
 float odom_x     = 0.0f;
 float odom_y     = 0.0f;
 float odom_theta = 0.0f;
 
-// ─── Encoder ISR ───
+// ─── Encoder ISRs ───
 void IRAM_ATTR enc_left_isr() {
     if (digitalRead(ENC_L_B) == LOW)
         enc_left++;
     else
         enc_left--;
+}
+
+void IRAM_ATTR enc_right_isr() {
+    if (digitalRead(ENC_R_B) == LOW)
+        enc_right++;
+    else
+        enc_right--;
+}
+
+// ─── PID ───
+struct PIDState { float integral; float prev_error; };
+
+static float pid_compute(PIDState& s, float target, float actual) {
+    float error  = target - actual;
+    float i_term = s.integral + error * MOTOR_TASK_DT;
+    // Anti-windup: clamp the integral so Ki·integral stays within ±INT_LIMIT PWM
+    s.integral   = constrain(i_term, -PID_INT_LIMIT / PID_KI, PID_INT_LIMIT / PID_KI);
+    float d_term = (error - s.prev_error) / MOTOR_TASK_DT;
+    s.prev_error = error;
+    return PID_KP * error + PID_KI * s.integral + PID_KD * d_term;
 }
 
 // ─── cmd_vel callback ───
@@ -90,42 +125,61 @@ void estop_callback(const void* msg) {
 
 // ─── Motor task — Core 1 ───
 void motor_task(void* pvParameters) {
+    PIDState pid_l = {}, pid_r = {};
+    long prev_enc_l = 0, prev_enc_r = 0;
+
     while (true) {
         float t_left, t_right;
-        bool e_stop;
+        bool  e_stop;
         unsigned long last_cmd;
 
         portENTER_CRITICAL(&mux);
-        t_left  = target_left;
-        t_right = target_right;
-        e_stop  = estop;
+        t_left   = target_left;
+        t_right  = target_right;
+        e_stop   = estop;
         last_cmd = last_cmd_vel_ms;
         portEXIT_CRITICAL(&mux);
 
-        if(millis() - last_cmd > 1000) { 
-            analogWrite(MOTOR_L_PWM, 0); // If no command received in the last second, stop
+        // Measure actual wheel speed (rad/s) from encoder delta
+        long curr_l = enc_left;
+        long curr_r = enc_right;
+        float actual_l = (curr_l - prev_enc_l) * RADS_PER_TICK / MOTOR_TASK_DT;
+        float actual_r = (curr_r - prev_enc_r) * RADS_PER_TICK / MOTOR_TASK_DT;
+        prev_enc_l = curr_l;
+        prev_enc_r = curr_r;
+
+        // Watchdog / e-stop: cut power and reset PID state
+        if (millis() - last_cmd > 1000 || e_stop) {
+            analogWrite(MOTOR_L_PWM, 0);
             analogWrite(MOTOR_R_PWM, 0);
+            pid_l = {};
+            pid_r = {};
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        if (e_stop) {
+        // Left motor
+        if (fabsf(t_left) < 0.01f) {
             analogWrite(MOTOR_L_PWM, 0);
-            analogWrite(MOTOR_R_PWM, 0);
+            pid_l = {};
         } else {
-            if (abs(t_left) > 0.01f) {
-                digitalWrite(MOTOR_L_DIR, t_left >= 0 ? HIGH : LOW);
-                analogWrite(MOTOR_L_PWM, 150);
-            } else {
-                analogWrite(MOTOR_L_PWM, 0);
-            }
+            float out_l  = pid_compute(pid_l, t_left, actual_l);
+            // Direction from target sign; PID magnitude drives PWM.
+            // Negative out (overshoot) clamps to 0 (coast) rather than reversing.
+            float drive_l = out_l * (t_left >= 0.0f ? 1.0f : -1.0f);
+            digitalWrite(MOTOR_L_DIR, t_left >= 0.0f ? HIGH : LOW);
+            analogWrite(MOTOR_L_PWM, (int)constrain(drive_l, 0.0f, 255.0f));
+        }
 
-            if (abs(t_right) > 0.01f) {
-                digitalWrite(MOTOR_R_DIR, t_right >= 0 ? HIGH : LOW);
-                analogWrite(MOTOR_R_PWM, 150);
-            } else {
-                analogWrite(MOTOR_R_PWM, 0);
-            }
+        // Right motor
+        if (fabsf(t_right) < 0.01f) {
+            analogWrite(MOTOR_R_PWM, 0);
+            pid_r = {};
+        } else {
+            float out_r   = pid_compute(pid_r, t_right, actual_r);
+            float drive_r = out_r * (t_right >= 0.0f ? 1.0f : -1.0f);
+            digitalWrite(MOTOR_R_DIR, t_right >= 0.0f ? HIGH : LOW);
+            analogWrite(MOTOR_R_PWM, (int)constrain(drive_r, 0.0f, 255.0f));
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -147,12 +201,13 @@ void setup() {
     analogWrite(MOTOR_L_PWM, 0);
     analogWrite(MOTOR_R_PWM, 0);
 
-    // Encoder
+    // Encoders
     pinMode(ENC_L_A, INPUT);
     pinMode(ENC_L_B, INPUT);
     attachInterrupt(digitalPinToInterrupt(ENC_L_A), enc_left_isr, RISING);
-    
-
+    pinMode(ENC_R_A, INPUT);
+    pinMode(ENC_R_B, INPUT);
+    attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_isr, RISING);
 
     // micro-ROS init
     allocator = rcl_get_default_allocator();
@@ -197,16 +252,27 @@ void loop() {
     if (millis() - last_odom > 100) {
         last_odom = millis();
 
-        static long last_enc = 0;
-        long curr_enc = enc_left;
-        float dl = (curr_enc - last_enc) * METERS_PER_TICK;
-        last_enc = curr_enc;
+        static long last_enc_l = 0;
+        static long last_enc_r = 0;
+        long curr_l = enc_left;
+        long curr_r = enc_right;
+        float dl = (curr_l - last_enc_l) * METERS_PER_TICK;
+        float dr = (curr_r - last_enc_r) * METERS_PER_TICK;
+        last_enc_l = curr_l;
+        last_enc_r = curr_r;
 
-        odom_x += dl * cos(odom_theta);
-        odom_y += dl * sin(odom_theta);
+        float ds     = (dl + dr) / 2.0f;
+        float dtheta = (dr - dl) / WHEEL_BASE;
+        odom_theta  += dtheta;
+        odom_x      += ds * cosf(odom_theta);
+        odom_y      += ds * sinf(odom_theta);
 
-        odom_msg.pose.pose.position.x = odom_x;
-        odom_msg.pose.pose.position.y = odom_y;
+        odom_msg.pose.pose.position.x    = odom_x;
+        odom_msg.pose.pose.position.y    = odom_y;
+        odom_msg.pose.pose.orientation.w = cosf(odom_theta / 2.0f);
+        odom_msg.pose.pose.orientation.x = 0.0f;
+        odom_msg.pose.pose.orientation.y = 0.0f;
+        odom_msg.pose.pose.orientation.z = sinf(odom_theta / 2.0f);
 
         rcl_publish(&odom_pub, &odom_msg, NULL);
     }
