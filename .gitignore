@@ -31,3 +31,17 @@ ml/runs/
 
 # Virtual environments
 venv/
+
+
+# ==========================================
+# KiCad Hardware Files
+# ==========================================
+**/*.bak
+**/*.kicad_prl
+**/*.kicad_pcb-bak
+**/*.kicad_sch-bak
+**/*~
+**/_autosave-*
+**/_restore_backup_*
+**/fp-info-cache
+**/*.lck
