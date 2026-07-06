@@ -25,13 +25,17 @@
 #define PID_INT_LIMIT  100.0f
 #define MOTOR_TASK_DT    0.01f
 
+// Defined here (before any function signatures) so Arduino auto-prototyping
+// doesn't generate a forward declaration for pid_compute before the type exists.
+struct PIDState { float integral; float prev_error; };
+
 // ─── PIN DEFINITIONS ───
 #define MOTOR_L_PWM   25
 #define MOTOR_L_DIR   26
 #define MOTOR_R_PWM   27
 #define MOTOR_R_DIR   14
 #define ENC_L_A       4
-#define ENC_L_B       5
+#define ENC_L_B       13
 #define ENC_R_A       32
 #define ENC_R_B       33
 
@@ -81,8 +85,6 @@ void IRAM_ATTR enc_right_isr() {
 }
 
 // ─── PID ───
-struct PIDState { float integral; float prev_error; };
-
 static float pid_compute(PIDState& s, float target, float actual) {
     float error  = target - actual;
     float i_term = s.integral + error * MOTOR_TASK_DT;
@@ -114,13 +116,20 @@ void cmd_vel_callback(const void* msg) {
 
 // ─── estop callback ───
 void estop_callback(const void* msg) {
+    const std_msgs__msg__String* s = (const std_msgs__msg__String*)msg;
+    // Coordinator sends "1" to cut motors, "0" to re-enable.
+    bool active = (s->data.size > 0 && s->data.data[0] == '1');
     portENTER_CRITICAL(&mux);
-    estop        = true;
-    target_left  = 0.0f;
-    target_right = 0.0f;
+    estop = active;
+    if (active) {
+        target_left  = 0.0f;
+        target_right = 0.0f;
+    }
     portEXIT_CRITICAL(&mux);
-    analogWrite(MOTOR_L_PWM, 0);
-    analogWrite(MOTOR_R_PWM, 0);
+    if (active) {
+        analogWrite(MOTOR_L_PWM, 0);
+        analogWrite(MOTOR_R_PWM, 0);
+    }
 }
 
 // ─── Motor task — Core 1 ───
