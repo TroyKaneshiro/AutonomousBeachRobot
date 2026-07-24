@@ -187,7 +187,7 @@ void motor_task(void* pvParameters) {
         } else {
             float out_r   = pid_compute(pid_r, t_right, actual_r);
             float drive_r = out_r * (t_right >= 0.0f ? 1.0f : -1.0f);
-            digitalWrite(MOTOR_R_DIR, t_right >= 0.0f ? HIGH : LOW);
+            digitalWrite(MOTOR_R_DIR, t_right >= 0.0f ? LOW : HIGH);
             analogWrite(MOTOR_R_PWM, (int)constrain(drive_r, 0.0f, 255.0f));
         }
 
