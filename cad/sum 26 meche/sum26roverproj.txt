@@ -1,0 +1,50 @@
+Project: Lake Michigan Trash-Picking Rover
+
+Goal:
+Build a sand-capable rover that can identify and pick up common beach trash near Lake Michigan, such as plastic bottles, wrappers, cans, and bottle caps.
+
+Career Angle:
+Use this as a NASA/JPL-relevant rover portfolio project focused on rough-terrain mobility, mechanical design, embedded controls, perception, and robotic manipulation.
+
+Core Features:
+- Sand-capable mobile rover
+- Trash pickup mechanism, likely scoop/claw first
+- Front camera for object detection
+- Manual teleop mode first
+- Autonomous target approach as a stretch goal
+- NVIDIA LocateAnything for vision-language trash detection
+- Possible smaller real-time detector fallback if LocateAnything is too slow onboard
+
+Mechanical Direction:
+- 4WD or 6WD rover
+- Large wheels or compliant tires for sand
+- Sealed electronics enclosure
+- SolidWorks CAD for chassis, drivetrain, motor mounts, and pickup mechanism
+- Test drivetrain on sand before adding autonomy
+
+Initial Milestones:
+1. CAD rough chassis layout
+2. Select motors, wheels, battery, motor drivers, and controller
+3. Build teleoperated rover
+4. Test mobility on sand/grass/gravel
+5. Add trash pickup mechanism
+6. Add camera and detection system
+7. Add basic autonomous approach behavior
+8. Collect test data and make portfolio page
+
+Metrics To Track:
+- Speed on sand
+- Battery runtime
+- Pickup success rate
+- False trash detections
+- Payload capacity
+- Max slope angle
+- Turning radius
+- Failure modes and design iterations
+
+Open Questions:
+- 4WD vs 6WD?
+- Wheels vs tracks?
+- Scoop vs claw vs conveyor?
+- Jetson onboard vs laptop-assisted vision?
+- Budget target?
