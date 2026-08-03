@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/twist.h>
 #include <nav_msgs/msg/odometry.h>
 #include <std_msgs/msg/string.h>
+#include <ESP32Servo.h>
 
 // ─── HARDWARE CONSTANTS ───
 #define WHEEL_RADIUS      0.051f
@@ -39,6 +40,32 @@ struct PIDState { float integral; float prev_error; };
 #define ENC_R_A       32
 #define ENC_R_B       33
 
+// ─── ARM CONSTANTS — placeholders, all TODOs below need real hardware values ───
+// Mechanism: one linear actuator lifts the scoop, one servo rotates at the
+// top to dump the load backward, then both retract/re-home.
+// TODO(partner): confirm actuator driver type. Assumed here: a PWM+DIR
+// H-bridge, same pattern as the drive motors (Cytron-style). If it's a
+// relay-reversing or L298N-style driver the DIR polarity below may need to
+// flip, and if it has built-in limit switches wire them to ARM_ACT_LIMIT_*.
+#define ARM_ACT_PWM           16   // linear actuator drive PWM
+#define ARM_ACT_DIR           17   // linear actuator direction (HIGH = extend/lift, TODO confirm)
+#define ARM_ACT_LIMIT_TOP     18   // optional top limit switch, INPUT_PULLUP, active LOW
+#define ARM_ACT_LIMIT_BOTTOM   5   // optional bottom limit switch, INPUT_PULLUP, active LOW
+#define ARM_SERVO_PIN         19   // hobby servo signal (dump gate)
+
+#define ARM_ACT_SPEED        200   // 0-255 PWM — placeholder, tune once actuator specs are known
+// TODO(partner): these two are a time-based fallback for actuators with no
+// limit switches/position feedback wired yet. Once ARM_ACT_LIMIT_TOP/BOTTOM
+// are physically wired, they end the stroke early and these just become a
+// timeout safety net — measure real travel time and set them a bit above it.
+#define ARM_LIFT_TIME_MS     3000
+#define ARM_LOWER_TIME_MS    3000
+
+#define ARM_SERVO_HOME_DEG      0   // TODO(partner): calibrate against the real dump-gate geometry
+#define ARM_SERVO_DUMP_DEG    120
+#define ARM_SERVO_MOVE_MS     600   // time to let the servo finish travelling before continuing
+#define ARM_SERVO_HOLD_MS     500   // how long to hold at the dump angle before returning home
+
 // ─── micro-ROS objects ───
 rcl_node_t node;
 rclc_support_t support;
@@ -47,13 +74,19 @@ rclc_executor_t executor;
 
 rcl_subscription_t cmd_vel_sub;
 rcl_subscription_t estop_sub;
+rcl_subscription_t arm_cmd_sub;
 rcl_publisher_t odom_pub;
 rcl_publisher_t motor_events_pub;
+rcl_publisher_t arm_events_pub;
 
 geometry_msgs__msg__Twist cmd_vel_msg;
 std_msgs__msg__String estop_msg;
 nav_msgs__msg__Odometry odom_msg;
 std_msgs__msg__String motor_event_msg;
+std_msgs__msg__String arm_cmd_msg;
+std_msgs__msg__String arm_event_msg;
+
+Servo arm_servo;
 
 // ─── Shared state with mutex ───
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -63,6 +96,7 @@ bool  estop        = false;
 volatile long enc_left  = 0;
 volatile long enc_right = 0;
 volatile unsigned long last_cmd_vel_ms = 0;
+volatile bool arm_trigger_pickup = false;
 
 // ─── Odometry state ───
 float odom_x     = 0.0f;
@@ -129,6 +163,89 @@ void estop_callback(const void* msg) {
     if (active) {
         analogWrite(MOTOR_L_PWM, 0);
         analogWrite(MOTOR_R_PWM, 0);
+    }
+}
+
+// ─── arm_cmd callback ───
+// Coordinator/mission_fsm sends "PICKUP" to run the lift-dump-lower sequence.
+void arm_cmd_callback(const void* msg) {
+    const std_msgs__msg__String* s = (const std_msgs__msg__String*)msg;
+    if (s->data.size >= 6 && strncmp(s->data.data, "PICKUP", 6) == 0) {
+        portENTER_CRITICAL(&mux);
+        arm_trigger_pickup = true;
+        portEXIT_CRITICAL(&mux);
+    }
+}
+
+static void publish_arm_event(const char* msg) {
+    arm_event_msg.data.data = (char*)msg;
+    arm_event_msg.data.size = strlen(msg);
+    arm_event_msg.data.capacity = strlen(msg) + 1;
+    rcl_publish(&arm_events_pub, &arm_event_msg, NULL);
+}
+
+// ─── Arm task — Core 0 ───
+// Non-PID: the actuator sequence is open-loop (time or limit-switch
+// bounded), so it doesn't need the tight 100Hz loop the drivetrain does.
+void arm_task(void* pvParameters) {
+    arm_servo.setPeriodHertz(50);
+    arm_servo.attach(ARM_SERVO_PIN, 500, 2400);
+    arm_servo.write(ARM_SERVO_HOME_DEG);
+
+    pinMode(ARM_ACT_PWM, OUTPUT);
+    pinMode(ARM_ACT_DIR, OUTPUT);
+    pinMode(ARM_ACT_LIMIT_TOP, INPUT_PULLUP);
+    pinMode(ARM_ACT_LIMIT_BOTTOM, INPUT_PULLUP);
+    analogWrite(ARM_ACT_PWM, 0);
+
+    while (true) {
+        bool trigger;
+        portENTER_CRITICAL(&mux);
+        trigger = arm_trigger_pickup;
+        arm_trigger_pickup = false;
+        portEXIT_CRITICAL(&mux);
+
+        if (trigger) {
+            // 1. Lift
+            digitalWrite(ARM_ACT_DIR, HIGH);
+            analogWrite(ARM_ACT_PWM, ARM_ACT_SPEED);
+            unsigned long start = millis();
+            bool aborted = false;
+            while (millis() - start < ARM_LIFT_TIME_MS) {
+                if (digitalRead(ARM_ACT_LIMIT_TOP) == LOW) break;
+                portENTER_CRITICAL(&mux);
+                aborted = estop;
+                portEXIT_CRITICAL(&mux);
+                if (aborted) break;
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            analogWrite(ARM_ACT_PWM, 0);
+
+            if (aborted) {
+                publish_arm_event("ARM_ABORTED");
+            } else {
+                // 2. Dump
+                arm_servo.write(ARM_SERVO_DUMP_DEG);
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_MOVE_MS));
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_HOLD_MS));
+                arm_servo.write(ARM_SERVO_HOME_DEG);
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_MOVE_MS));
+
+                // 3. Lower back down
+                digitalWrite(ARM_ACT_DIR, LOW);
+                analogWrite(ARM_ACT_PWM, ARM_ACT_SPEED);
+                start = millis();
+                while (millis() - start < ARM_LOWER_TIME_MS) {
+                    if (digitalRead(ARM_ACT_LIMIT_BOTTOM) == LOW) break;
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                analogWrite(ARM_ACT_PWM, 0);
+
+                publish_arm_event("ARM_DONE");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -230,6 +347,9 @@ void setup() {
     rclc_subscription_init_default(&estop_sub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/e_stop");
+    rclc_subscription_init_default(&arm_cmd_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/arm_cmd");
 
     // Publishers
     rclc_publisher_init_default(&odom_pub, &node,
@@ -238,19 +358,22 @@ void setup() {
     rclc_publisher_init_default(&motor_events_pub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/motor_events");
+    rclc_publisher_init_default(&arm_events_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/arm_events");
 
     // Executor
-    rclc_executor_init(&executor, &support.context, 2, &allocator);
+    rclc_executor_init(&executor, &support.context, 3, &allocator);
     rclc_executor_add_subscription(&executor, &cmd_vel_sub, &cmd_vel_msg,
         &cmd_vel_callback, ON_NEW_DATA);
     rclc_executor_add_subscription(&executor, &estop_sub, &estop_msg,
         &estop_callback, ON_NEW_DATA);
+    rclc_executor_add_subscription(&executor, &arm_cmd_sub, &arm_cmd_msg,
+        &arm_cmd_callback, ON_NEW_DATA);
 
-    // Pin motor task to Core 1
+    // Pin motor task to Core 1, arm task to Core 0 (mostly idle in vTaskDelay)
     xTaskCreatePinnedToCore(motor_task, "MOTOR", 4096, NULL, 1, NULL, 1);
-
-
-
+    xTaskCreatePinnedToCore(arm_task, "ARM", 4096, NULL, 1, NULL, 0);
 }
 
 // ─── loop — Core 0 ───

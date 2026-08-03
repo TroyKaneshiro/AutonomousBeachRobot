@@ -36,6 +36,8 @@ GPS coordinates. V2 adds a servo gripper arm for physical pickup.
 | /trash_detector/reset    | std_msgs/Empty          | mission_fsm, coordinator | trash_detector             |
 | /cmd_vel                 | geometry_msgs/Twist     | mission_fsm        | ESP32                            |
 | /e_stop                  | std_msgs/Bool           | coordinator        | ESP32 firmware                   |
+| /arm_cmd                 | std_msgs/String         | (not yet wired up) | ESP32 firmware                   |
+| /arm_events              | std_msgs/String         | ESP32               | (not yet wired up)              |
 | /mission_control/command | std_msgs/String         | operator           | coordinator                      |
 | /mission_status          | std_msgs/String (JSON)  | coordinator        | operator monitoring              |
 
@@ -120,5 +122,5 @@ ros2 topic pub --once /mission_control/command std_msgs/msg/String "data: STOP"
 - [x] `fake_hardware.py` — stubs all hardware topics for hardwareless testing
 - [ ] Hardwareless end-to-end test — ready to run (needs image with detectable trash)
 - [ ] Model fine-tuning — deferred (current model detects poorly on beach-specific trash)
-- [ ] ESP32 firmware — not yet written
+- [x] ESP32 firmware — drivetrain PID + micro-ROS done; arm sequence (linear actuator lift + servo dump) is a starter implementation with placeholder pins/timing, needs bench tuning against real hardware — see `firmware/esp32/src/main.cpp`
 - [ ] Hardware — not yet arrived

@@ -32,6 +32,9 @@ ml/runs/
 # Virtual environments
 venv/
 
+# PlatformIO build/dependency cache
+.pio/
+
 
 # ==========================================
 # KiCad Hardware Files
