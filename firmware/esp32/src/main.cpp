@@ -4,27 +4,40 @@
 #include <rclc/executor.h>
 #include <geometry_msgs/msg/twist.h>
 #include <nav_msgs/msg/odometry.h>
-#include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/string.h>
 
-// ─── HARDWARE CONSTANTS (fill in with motor specs) ───
-#define WHEEL_BASE        0.0f   // meters, center-to-center left/right wheels
-#define WHEEL_RADIUS      0.0f   // meters
-#define TICKS_PER_REV     0      // encoder ticks per wheel revolution (after gearbox)
+// ─── HARDWARE CONSTANTS ───
+#define WHEEL_RADIUS      0.051f
+#define WHEEL_BASE        0.3f
+#define TICKS_PER_REV     1664
 #define METERS_PER_TICK   (2.0f * M_PI * WHEEL_RADIUS / TICKS_PER_REV)
+#define RADS_PER_TICK     (2.0f * M_PI / TICKS_PER_REV)
 
-// ─── PIN DEFINITIONS (assign) ───
-#define MOTOR_L_PWM   0    // GPIO for left motor PWM
-#define MOTOR_L_DIR   0    // GPIO for left motor direction
-#define MOTOR_R_PWM   0    // GPIO for right motor PWM
-#define MOTOR_R_DIR   0    // GPIO for right motor direction
-#define ENC_L_A       0    // left encoder channel A
-#define ENC_L_B       0    // left encoder channel B
-#define ENC_R_A       0    // right encoder channel A
-#define ENC_R_B       0    // right encoder channel B
-#define BATTERY_PIN   34   // ADC pin for battery voltage divider
-#define CURRENT_L_PIN 35   // ACS712 left motor
-#define CURRENT_R_PIN 32   // ACS712 right motor
+// ─── PID CONSTANTS (starter values — tune on the bench) ───
+// Kp: PWM per (rad/s) error.  Too low → sluggish; too high → oscillation.
+// Ki: integrates out steady-state drag/friction offset.
+// Kd: set to 0 first; only raise if Kp+Ki loop is stable and you need faster settling.
+// INT_LIMIT: caps |Ki·integral| at ±100 PWM so the integrator can't saturate the output.
+// TASK_DT:   must match the vTaskDelay period at the bottom of motor_task (10 ms).
+#define PID_KP          50.0f
+#define PID_KI          20.0f
+#define PID_KD           0.5f
+#define PID_INT_LIMIT  100.0f
+#define MOTOR_TASK_DT    0.01f
+
+// Defined here (before any function signatures) so Arduino auto-prototyping
+// doesn't generate a forward declaration for pid_compute before the type exists.
+struct PIDState { float integral; float prev_error; };
+
+// ─── PIN DEFINITIONS ───
+#define MOTOR_L_PWM   25
+#define MOTOR_L_DIR   26
+#define MOTOR_R_PWM   27
+#define MOTOR_R_DIR   14
+#define ENC_L_A       4
+#define ENC_L_B       13
+#define ENC_R_A       32
+#define ENC_R_B       33
 
 // ─── micro-ROS objects ───
 rcl_node_t node;
@@ -35,46 +48,52 @@ rclc_executor_t executor;
 rcl_subscription_t cmd_vel_sub;
 rcl_subscription_t estop_sub;
 rcl_publisher_t odom_pub;
-rcl_publisher_t battery_pub;
 rcl_publisher_t motor_events_pub;
 
 geometry_msgs__msg__Twist cmd_vel_msg;
 std_msgs__msg__String estop_msg;
+nav_msgs__msg__Odometry odom_msg;
+std_msgs__msg__String motor_event_msg;
 
-// ─── Shared state between cores ───
-volatile float target_left  = 0.0f;   // rad/s
-volatile float target_right = 0.0f;   // rad/s
-volatile bool  estop        = false;
-
+// ─── Shared state with mutex ───
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+float target_left  = 0.0f;
+float target_right = 0.0f;
+bool  estop        = false;
 volatile long enc_left  = 0;
 volatile long enc_right = 0;
+volatile unsigned long last_cmd_vel_ms = 0;
 
 // ─── Odometry state ───
 float odom_x     = 0.0f;
 float odom_y     = 0.0f;
 float odom_theta = 0.0f;
 
-// ─── PID state ───
-struct PID {
-    float kp, ki, kd;
-    float integral  = 0.0f;
-    float prev_error = 0.0f;
-
-    float compute(float setpoint, float measured, float dt) {
-        float error    = setpoint - measured;
-        integral      += error * dt;
-        float deriv    = (error - prev_error) / dt;
-        prev_error     = error;
-        return kp * error + ki * integral + kd * deriv;
-    }
-};
-
-PID pid_left  = {1.0f, 0.1f, 0.01f};
-PID pid_right = {1.0f, 0.1f, 0.01f};
-
 // ─── Encoder ISRs ───
-void IRAM_ATTR enc_left_isr()  { enc_left++;  }
-void IRAM_ATTR enc_right_isr() { enc_right++; }
+void IRAM_ATTR enc_left_isr() {
+    if (digitalRead(ENC_L_B) == LOW)
+        enc_left++;
+    else
+        enc_left--;
+}
+
+void IRAM_ATTR enc_right_isr() {
+    if (digitalRead(ENC_R_B) == LOW)
+        enc_right++;
+    else
+        enc_right--;
+}
+
+// ─── PID ───
+static float pid_compute(PIDState& s, float target, float actual) {
+    float error  = target - actual;
+    float i_term = s.integral + error * MOTOR_TASK_DT;
+    // Anti-windup: clamp the integral so Ki·integral stays within ±INT_LIMIT PWM
+    s.integral   = constrain(i_term, -PID_INT_LIMIT / PID_KI, PID_INT_LIMIT / PID_KI);
+    float d_term = (error - s.prev_error) / MOTOR_TASK_DT;
+    s.prev_error = error;
+    return PID_KP * error + PID_KI * s.integral + PID_KD * d_term;
+}
 
 // ─── cmd_vel callback ───
 void cmd_vel_callback(const void* msg) {
@@ -84,53 +103,93 @@ void cmd_vel_callback(const void* msg) {
     float linear  = twist->linear.x;
     float angular = twist->angular.z;
 
+    portENTER_CRITICAL(&mux);
     target_left  = (linear - angular * WHEEL_BASE / 2.0f) / WHEEL_RADIUS;
     target_right = (linear + angular * WHEEL_BASE / 2.0f) / WHEEL_RADIUS;
+    last_cmd_vel_ms = millis();
+    portEXIT_CRITICAL(&mux);
+
+    motor_event_msg.data.data = (char*)"CMD_VEL received";
+    motor_event_msg.data.size = 16;
+    rcl_publish(&motor_events_pub, &motor_event_msg, NULL);
 }
 
 // ─── estop callback ───
 void estop_callback(const void* msg) {
-    estop = true;
-    target_left  = 0.0f;
-    target_right = 0.0f;
-    // cut motor PWM immediately
-    analogWrite(MOTOR_L_PWM, 0);
-    analogWrite(MOTOR_R_PWM, 0);
+    const std_msgs__msg__String* s = (const std_msgs__msg__String*)msg;
+    // Coordinator sends "1" to cut motors, "0" to re-enable.
+    bool active = (s->data.size > 0 && s->data.data[0] == '1');
+    portENTER_CRITICAL(&mux);
+    estop = active;
+    if (active) {
+        target_left  = 0.0f;
+        target_right = 0.0f;
+    }
+    portEXIT_CRITICAL(&mux);
+    if (active) {
+        analogWrite(MOTOR_L_PWM, 0);
+        analogWrite(MOTOR_R_PWM, 0);
+    }
 }
 
-// ─── PID task — Core 1 ───
-void pid_task(void* pvParameters) {
-    const float dt = 0.01f;  // 100Hz
-    long prev_enc_left  = 0;
-    long prev_enc_right = 0;
+// ─── Motor task — Core 1 ───
+void motor_task(void* pvParameters) {
+    PIDState pid_l = {}, pid_r = {};
+    long prev_enc_l = 0, prev_enc_r = 0;
 
     while (true) {
-        if (estop) {
+        float t_left, t_right;
+        bool  e_stop;
+        unsigned long last_cmd;
+
+        portENTER_CRITICAL(&mux);
+        t_left   = target_left;
+        t_right  = target_right;
+        e_stop   = estop;
+        last_cmd = last_cmd_vel_ms;
+        portEXIT_CRITICAL(&mux);
+
+        // Measure actual wheel speed (rad/s) from encoder delta
+        long curr_l = enc_left;
+        long curr_r = enc_right;
+        float actual_l = (curr_l - prev_enc_l) * RADS_PER_TICK / MOTOR_TASK_DT;
+        float actual_r = (curr_r - prev_enc_r) * RADS_PER_TICK / MOTOR_TASK_DT;
+        prev_enc_l = curr_l;
+        prev_enc_r = curr_r;
+
+        // Watchdog / e-stop: cut power and reset PID state
+        if (millis() - last_cmd > 1000 || e_stop) {
+            analogWrite(MOTOR_L_PWM, 0);
+            analogWrite(MOTOR_R_PWM, 0);
+            pid_l = {};
+            pid_r = {};
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        // Measure current velocity
-        long curr_left  = enc_left;
-        long curr_right = enc_right;
+        // Left motor
+        if (fabsf(t_left) < 0.01f) {
+            analogWrite(MOTOR_L_PWM, 0);
+            pid_l = {};
+        } else {
+            float out_l  = pid_compute(pid_l, t_left, actual_l);
+            // Direction from target sign; PID magnitude drives PWM.
+            // Negative out (overshoot) clamps to 0 (coast) rather than reversing.
+            float drive_l = out_l * (t_left >= 0.0f ? 1.0f : -1.0f);
+            digitalWrite(MOTOR_L_DIR, t_left >= 0.0f ? HIGH : LOW);
+            analogWrite(MOTOR_L_PWM, (int)constrain(drive_l, 0.0f, 255.0f));
+        }
 
-        float vel_left  = ((curr_left  - prev_enc_left)  * METERS_PER_TICK) / dt / WHEEL_RADIUS;
-        float vel_right = ((curr_right - prev_enc_right) * METERS_PER_TICK) / dt / WHEEL_RADIUS;
-
-        prev_enc_left  = curr_left;
-        prev_enc_right = curr_right;
-
-        // PID
-        float out_left  = pid_left.compute(target_left,  vel_left,  dt);
-        float out_right = pid_right.compute(target_right, vel_right, dt);
-
-        // Write to Cytron MDD10A
-        // DIR pin: HIGH = forward, LOW = reverse
-        // PWM pin: 0-255 duty cycle
-        digitalWrite(MOTOR_L_DIR, out_left  >= 0 ? HIGH : LOW);
-        digitalWrite(MOTOR_R_DIR, out_right >= 0 ? HIGH : LOW);
-        analogWrite(MOTOR_L_PWM, constrain((int)abs(out_left  * 255), 0, 255));
-        analogWrite(MOTOR_R_PWM, constrain((int)abs(out_right * 255), 0, 255));
+        // Right motor
+        if (fabsf(t_right) < 0.01f) {
+            analogWrite(MOTOR_R_PWM, 0);
+            pid_r = {};
+        } else {
+            float out_r   = pid_compute(pid_r, t_right, actual_r);
+            float drive_r = out_r * (t_right >= 0.0f ? 1.0f : -1.0f);
+            digitalWrite(MOTOR_R_DIR, t_right >= 0.0f ? LOW : HIGH);
+            analogWrite(MOTOR_R_PWM, (int)constrain(drive_r, 0.0f, 255.0f));
+        }
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -139,15 +198,24 @@ void pid_task(void* pvParameters) {
 // ─── setup ───
 void setup() {
     Serial.begin(115200);
-    set_microros_serial_transports(Serial);
+    set_microros_transports();
 
-    // Pin modes
+    // Motor pins
     pinMode(MOTOR_L_PWM, OUTPUT);
     pinMode(MOTOR_L_DIR, OUTPUT);
     pinMode(MOTOR_R_PWM, OUTPUT);
     pinMode(MOTOR_R_DIR, OUTPUT);
 
-    attachInterrupt(digitalPinToInterrupt(ENC_L_A), enc_left_isr,  RISING);
+    // Start motors off
+    analogWrite(MOTOR_L_PWM, 0);
+    analogWrite(MOTOR_R_PWM, 0);
+
+    // Encoders
+    pinMode(ENC_L_A, INPUT);
+    pinMode(ENC_L_B, INPUT);
+    attachInterrupt(digitalPinToInterrupt(ENC_L_A), enc_left_isr, RISING);
+    pinMode(ENC_R_A, INPUT);
+    pinMode(ENC_R_B, INPUT);
     attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_isr, RISING);
 
     // micro-ROS init
@@ -157,17 +225,19 @@ void setup() {
 
     // Subscriptions
     rclc_subscription_init_default(&cmd_vel_sub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/cmd_vel");
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
+        "/cmd_vel");
     rclc_subscription_init_default(&estop_sub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/e_stop");
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/e_stop");
 
     // Publishers
     rclc_publisher_init_default(&odom_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry), "/wheel/odometry");
-    rclc_publisher_init_default(&battery_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "/battery_voltage");
+        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
+        "/wheel/odometry");
     rclc_publisher_init_default(&motor_events_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/motor_events");
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/motor_events");
 
     // Executor
     rclc_executor_init(&executor, &support.context, 2, &allocator);
@@ -176,35 +246,43 @@ void setup() {
     rclc_executor_add_subscription(&executor, &estop_sub, &estop_msg,
         &estop_callback, ON_NEW_DATA);
 
-    // Pin PID to Core 1
-    xTaskCreatePinnedToCore(pid_task, "PID", 4096, NULL, 1, NULL, 1);
+    // Pin motor task to Core 1
+    xTaskCreatePinnedToCore(motor_task, "MOTOR", 4096, NULL, 1, NULL, 1);
+
+
+
 }
 
-// ─── loop — Core 0 (micro-ROS + publishing) ───
+// ─── loop — Core 0 ───
 void loop() {
-    // Spin micro-ROS executor
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
 
-    // Publish odometry at 10Hz
     static unsigned long last_odom = 0;
     if (millis() - last_odom > 100) {
         last_odom = millis();
-        // TODO: fill odometry message from enc_left/enc_right and publish
-    }
 
-    // Publish battery at 1Hz
-    static unsigned long last_batt = 0;
-    if (millis() - last_batt > 1000) {
-        last_batt = millis();
-        // ADC read → voltage divider math → publish
-        // float voltage = analogRead(BATTERY_PIN) * (3.3f / 4095.0f) * DIVIDER_RATIO;
-    }
+        static long last_enc_l = 0;
+        static long last_enc_r = 0;
+        long curr_l = enc_left;
+        long curr_r = enc_right;
+        float dl = (curr_l - last_enc_l) * METERS_PER_TICK;
+        float dr = (curr_r - last_enc_r) * METERS_PER_TICK;
+        last_enc_l = curr_l;
+        last_enc_r = curr_r;
 
-    // Stall detection at 10Hz
-    static unsigned long last_current = 0;
-    if (millis() - last_current > 100) {
-        last_current = millis();
-        // ACS712: Vout = 2.5V + (66mV/A * current)
-        // float current_l = (analogRead(CURRENT_L_PIN) * 3.3f/4095.0f - 2.5f) / 0.066f;
+        float ds     = (dl + dr) / 2.0f;
+        float dtheta = (dr - dl) / WHEEL_BASE;
+        odom_theta  += dtheta;
+        odom_x      += ds * cosf(odom_theta);
+        odom_y      += ds * sinf(odom_theta);
+
+        odom_msg.pose.pose.position.x    = odom_x;
+        odom_msg.pose.pose.position.y    = odom_y;
+        odom_msg.pose.pose.orientation.w = cosf(odom_theta / 2.0f);
+        odom_msg.pose.pose.orientation.x = 0.0f;
+        odom_msg.pose.pose.orientation.y = 0.0f;
+        odom_msg.pose.pose.orientation.z = sinf(odom_theta / 2.0f);
+
+        rcl_publish(&odom_pub, &odom_msg, NULL);
     }
 }

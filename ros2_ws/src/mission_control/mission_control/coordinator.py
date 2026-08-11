@@ -5,7 +5,7 @@ from datetime import datetime
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, Float32, String
+from std_msgs.msg import Empty, Float32, String
 
 
 class Coordinator(Node):
@@ -33,9 +33,9 @@ class Coordinator(Node):
 
         # --- Publishers ---
         self.status_pub = self.create_publisher(String, '/mission_status', 10)
-        # /e_stop True = motors cut; False = motors enabled.
+        # /e_stop "1" = motors cut; "0" = motors enabled.
         # The ESP32 firmware subscribes to this topic.
-        self.e_stop_pub = self.create_publisher(Bool, '/e_stop', 10)
+        self.e_stop_pub = self.create_publisher(String, '/e_stop', 10)
         # Zero cmd_vel sent on STOP to flush any in-flight velocity command.
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.reset_pub = self.create_publisher(Empty, '/trash_detector/reset', 10)
@@ -179,8 +179,8 @@ class Coordinator(Node):
     # ------------------------------------------------------------------ #
 
     def _set_e_stop(self, active: bool):
-        msg = Bool()
-        msg.data = active
+        msg = String()
+        msg.data = '1' if active else '0'
         self.e_stop_pub.publish(msg)
 
 
