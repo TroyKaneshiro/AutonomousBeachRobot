@@ -4,7 +4,12 @@
 #include <rclc/executor.h>
 #include <geometry_msgs/msg/twist.h>
 #include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/imu.h>
 #include <std_msgs/msg/string.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <I2Cdev.h>
+#include <MPU6050.h>
 
 // ─── HARDWARE CONSTANTS ───
 #define WHEEL_RADIUS      0.051f
@@ -39,6 +44,53 @@ struct PIDState { float integral; float prev_error; };
 #define ENC_R_A       32
 #define ENC_R_B       33
 
+// ─── ARM CONSTANTS — placeholders, all TODOs below need real hardware values ───
+// Mechanism: one linear actuator lifts the scoop, one servo rotates at the
+// top to dump the load backward, then both retract/re-home.
+// TODO(partner): confirm actuator driver type. Assumed here: a PWM+DIR
+// H-bridge, same pattern as the drive motors (Cytron-style). If it's a
+// relay-reversing or L298N-style driver the DIR polarity below may need to
+// flip, and if it has built-in limit switches wire them to ARM_ACT_LIMIT_*.
+#define ARM_ACT_PWM           16   // linear actuator drive PWM
+#define ARM_ACT_DIR           17   // linear actuator direction (HIGH = extend/lift, TODO confirm)
+#define ARM_ACT_LIMIT_TOP     18   // optional top limit switch, INPUT_PULLUP, active LOW
+#define ARM_ACT_LIMIT_BOTTOM   5   // optional bottom limit switch, INPUT_PULLUP, active LOW
+
+// One shared I2C bus carries both the dump-gate servo driver (PCA9685) and
+// the MPU-6050 IMU — this board wires SDA to GPIO21 and SCL to GPIO22.
+#define I2C_SDA_PIN               21
+#define I2C_SCL_PIN               22
+
+// Dump-gate servo is on a PCA9685 PWM driver board, not a direct GPIO — leaves
+// GPIO pins free and gives the servo its own dedicated ~50Hz PWM generator
+// instead of sharing an ESP32 LEDC channel with other PWM users.
+#define PCA9685_I2C_ADDR       0x40
+#define PCA9685_PWM_FREQ_HZ      50   // hobby servos expect ~50Hz
+#define ARM_SERVO_CHANNEL         0   // PCA9685 output channel driving the dump-gate servo
+
+// MPU-6050 terrain-safety IMU — see terrain_monitor.py (STOP_IMU channel).
+// Scale factors are for the library's power-on defaults: ±2g accel, ±250°/s gyro.
+#define MPU6050_I2C_ADDR       0x68   // AD0 tied LOW; 0x69 if tied HIGH
+#define IMU_ACCEL_LSB_PER_G  16384.0f
+#define IMU_GYRO_LSB_PER_DPS   131.0f
+#define GRAVITY_MSS              9.81f
+#define IMU_PUBLISH_INTERVAL_MS   10   // 100Hz, matches terrain_monitor's calibration window
+
+#define ARM_ACT_SPEED        200   // 0-255 PWM — placeholder, tune once actuator specs are known
+// TODO(partner): these two are a time-based fallback for actuators with no
+// limit switches/position feedback wired yet. Once ARM_ACT_LIMIT_TOP/BOTTOM
+// are physically wired, they end the stroke early and these just become a
+// timeout safety net — measure real travel time and set them a bit above it.
+#define ARM_LIFT_TIME_MS     3000
+#define ARM_LOWER_TIME_MS    3000
+
+#define ARM_SERVO_HOME_DEG      0   // TODO(partner): calibrate against the real dump-gate geometry
+#define ARM_SERVO_DUMP_DEG    120
+#define ARM_SERVO_PULSE_MIN_US 500  // pulse width at 0 degrees — TODO(partner): tune to the servo's real range
+#define ARM_SERVO_PULSE_MAX_US 2400 // pulse width at 180 degrees
+#define ARM_SERVO_MOVE_MS     600   // time to let the servo finish travelling before continuing
+#define ARM_SERVO_HOLD_MS     500   // how long to hold at the dump angle before returning home
+
 // ─── micro-ROS objects ───
 rcl_node_t node;
 rclc_support_t support;
@@ -47,13 +99,22 @@ rclc_executor_t executor;
 
 rcl_subscription_t cmd_vel_sub;
 rcl_subscription_t estop_sub;
+rcl_subscription_t arm_cmd_sub;
 rcl_publisher_t odom_pub;
 rcl_publisher_t motor_events_pub;
+rcl_publisher_t arm_events_pub;
+rcl_publisher_t imu_pub;
 
 geometry_msgs__msg__Twist cmd_vel_msg;
 std_msgs__msg__String estop_msg;
 nav_msgs__msg__Odometry odom_msg;
 std_msgs__msg__String motor_event_msg;
+std_msgs__msg__String arm_cmd_msg;
+std_msgs__msg__String arm_event_msg;
+sensor_msgs__msg__Imu imu_msg;
+
+Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA9685_I2C_ADDR);
+MPU6050 imu(MPU6050_I2C_ADDR);
 
 // ─── Shared state with mutex ───
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -63,6 +124,7 @@ bool  estop        = false;
 volatile long enc_left  = 0;
 volatile long enc_right = 0;
 volatile unsigned long last_cmd_vel_ms = 0;
+volatile bool arm_trigger_pickup = false;
 
 // ─── Odometry state ───
 float odom_x     = 0.0f;
@@ -129,6 +191,93 @@ void estop_callback(const void* msg) {
     if (active) {
         analogWrite(MOTOR_L_PWM, 0);
         analogWrite(MOTOR_R_PWM, 0);
+    }
+}
+
+// ─── arm_cmd callback ───
+// Coordinator/mission_fsm sends "PICKUP" to run the lift-dump-lower sequence.
+void arm_cmd_callback(const void* msg) {
+    const std_msgs__msg__String* s = (const std_msgs__msg__String*)msg;
+    if (s->data.size >= 6 && strncmp(s->data.data, "PICKUP", 6) == 0) {
+        portENTER_CRITICAL(&mux);
+        arm_trigger_pickup = true;
+        portEXIT_CRITICAL(&mux);
+    }
+}
+
+// ─── PCA9685 servo helper ───
+static void arm_servo_write(int deg) {
+    int pulse_us = map(deg, 0, 180, ARM_SERVO_PULSE_MIN_US, ARM_SERVO_PULSE_MAX_US);
+    pca.writeMicroseconds(ARM_SERVO_CHANNEL, pulse_us);
+}
+
+static void publish_arm_event(const char* msg) {
+    arm_event_msg.data.data = (char*)msg;
+    arm_event_msg.data.size = strlen(msg);
+    arm_event_msg.data.capacity = strlen(msg) + 1;
+    rcl_publish(&arm_events_pub, &arm_event_msg, NULL);
+}
+
+// ─── Arm task — Core 0 ───
+// Non-PID: the actuator sequence is open-loop (time or limit-switch
+// bounded), so it doesn't need the tight 100Hz loop the drivetrain does.
+void arm_task(void* pvParameters) {
+    arm_servo_write(ARM_SERVO_HOME_DEG);
+
+    pinMode(ARM_ACT_PWM, OUTPUT);
+    pinMode(ARM_ACT_DIR, OUTPUT);
+    pinMode(ARM_ACT_LIMIT_TOP, INPUT_PULLUP);
+    pinMode(ARM_ACT_LIMIT_BOTTOM, INPUT_PULLUP);
+    analogWrite(ARM_ACT_PWM, 0);
+
+    while (true) {
+        bool trigger;
+        portENTER_CRITICAL(&mux);
+        trigger = arm_trigger_pickup;
+        arm_trigger_pickup = false;
+        portEXIT_CRITICAL(&mux);
+
+        if (trigger) {
+            // 1. Lift
+            digitalWrite(ARM_ACT_DIR, HIGH);
+            analogWrite(ARM_ACT_PWM, ARM_ACT_SPEED);
+            unsigned long start = millis();
+            bool aborted = false;
+            while (millis() - start < ARM_LIFT_TIME_MS) {
+                if (digitalRead(ARM_ACT_LIMIT_TOP) == LOW) break;
+                portENTER_CRITICAL(&mux);
+                aborted = estop;
+                portEXIT_CRITICAL(&mux);
+                if (aborted) break;
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            analogWrite(ARM_ACT_PWM, 0);
+
+            if (aborted) {
+                publish_arm_event("ARM_ABORTED");
+            } else {
+                // 2. Dump
+                arm_servo_write(ARM_SERVO_DUMP_DEG);
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_MOVE_MS));
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_HOLD_MS));
+                arm_servo_write(ARM_SERVO_HOME_DEG);
+                vTaskDelay(pdMS_TO_TICKS(ARM_SERVO_MOVE_MS));
+
+                // 3. Lower back down
+                digitalWrite(ARM_ACT_DIR, LOW);
+                analogWrite(ARM_ACT_PWM, ARM_ACT_SPEED);
+                start = millis();
+                while (millis() - start < ARM_LOWER_TIME_MS) {
+                    if (digitalRead(ARM_ACT_LIMIT_BOTTOM) == LOW) break;
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                analogWrite(ARM_ACT_PWM, 0);
+
+                publish_arm_event("ARM_DONE");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -218,6 +367,26 @@ void setup() {
     pinMode(ENC_R_B, INPUT);
     attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_isr, RISING);
 
+    // Shared I2C bus — PCA9685 (arm dump-gate servo) + MPU-6050 (terrain IMU)
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+    pca.begin();
+    pca.setPWMFreq(PCA9685_PWM_FREQ_HZ);
+
+    imu.initialize();
+    if (!imu.testConnection()) {
+        Serial.println("MPU6050 init failed — check wiring/address");
+    }
+    // Fields that never change: no orientation estimate (raw accel/gyro only),
+    // so mark those covariances unknown per REP-145.
+    imu_msg.header.frame_id.data     = (char*)"imu";
+    imu_msg.header.frame_id.size     = 3;
+    imu_msg.header.frame_id.capacity = 4;
+    imu_msg.orientation.w                    = 1.0;
+    imu_msg.orientation_covariance[0]        = -1.0;
+    imu_msg.angular_velocity_covariance[0]   = -1.0;
+    imu_msg.linear_acceleration_covariance[0] = -1.0;
+
     // micro-ROS init
     allocator = rcl_get_default_allocator();
     rclc_support_init(&support, 0, NULL, &allocator);
@@ -230,6 +399,9 @@ void setup() {
     rclc_subscription_init_default(&estop_sub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/e_stop");
+    rclc_subscription_init_default(&arm_cmd_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/arm_cmd");
 
     // Publishers
     rclc_publisher_init_default(&odom_pub, &node,
@@ -238,24 +410,50 @@ void setup() {
     rclc_publisher_init_default(&motor_events_pub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/motor_events");
+    rclc_publisher_init_default(&arm_events_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/arm_events");
+    rclc_publisher_init_default(&imu_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
+        "/imu/data");
 
     // Executor
-    rclc_executor_init(&executor, &support.context, 2, &allocator);
+    rclc_executor_init(&executor, &support.context, 3, &allocator);
     rclc_executor_add_subscription(&executor, &cmd_vel_sub, &cmd_vel_msg,
         &cmd_vel_callback, ON_NEW_DATA);
     rclc_executor_add_subscription(&executor, &estop_sub, &estop_msg,
         &estop_callback, ON_NEW_DATA);
+    rclc_executor_add_subscription(&executor, &arm_cmd_sub, &arm_cmd_msg,
+        &arm_cmd_callback, ON_NEW_DATA);
 
-    // Pin motor task to Core 1
+    // Pin motor task to Core 1, arm task to Core 0 (mostly idle in vTaskDelay)
     xTaskCreatePinnedToCore(motor_task, "MOTOR", 4096, NULL, 1, NULL, 1);
-
-
-
+    xTaskCreatePinnedToCore(arm_task, "ARM", 4096, NULL, 1, NULL, 0);
 }
 
 // ─── loop — Core 0 ───
 void loop() {
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
+
+    static unsigned long last_imu = 0;
+    if (millis() - last_imu > IMU_PUBLISH_INTERVAL_MS) {
+        last_imu = millis();
+
+        int16_t ax, ay, az, gx, gy, gz;
+        imu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+        // TODO(partner): mounting orientation isn't calibrated yet — flat
+        // ground should read az ≈ +GRAVITY_MSS (terrain_monitor's atan2(ax, az)
+        // pitch convention assumes this). Re-check axis signs once mounted.
+        imu_msg.linear_acceleration.x = (ax / IMU_ACCEL_LSB_PER_G) * GRAVITY_MSS;
+        imu_msg.linear_acceleration.y = (ay / IMU_ACCEL_LSB_PER_G) * GRAVITY_MSS;
+        imu_msg.linear_acceleration.z = (az / IMU_ACCEL_LSB_PER_G) * GRAVITY_MSS;
+        imu_msg.angular_velocity.x = (gx / IMU_GYRO_LSB_PER_DPS) * DEG_TO_RAD;
+        imu_msg.angular_velocity.y = (gy / IMU_GYRO_LSB_PER_DPS) * DEG_TO_RAD;
+        imu_msg.angular_velocity.z = (gz / IMU_GYRO_LSB_PER_DPS) * DEG_TO_RAD;
+
+        rcl_publish(&imu_pub, &imu_msg, NULL);
+    }
 
     static unsigned long last_odom = 0;
     if (millis() - last_odom > 100) {
