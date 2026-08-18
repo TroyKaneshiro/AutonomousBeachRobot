@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/twist.h>
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/imu.h>
+#include <sensor_msgs/msg/range.h>
 #include <std_msgs/msg/string.h>
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
@@ -43,6 +44,13 @@ struct PIDState { float integral; float prev_error; };
 #define ENC_L_B       13
 #define ENC_R_A       32
 #define ENC_R_B       33
+
+// HC-SR04 ultrasonic — front-facing object detection.
+// NOTE: GPIO34/35 are input-only on the ESP32 (no output driver), so TRIG
+// cannot physically be wired to 35 as originally planned. TRIG moved to the
+// free GPIO23; ECHO stays on 34 since input-only is fine for an input pin.
+#define ULTRASONIC_TRIG_PIN   23
+#define ULTRASONIC_ECHO_PIN   34
 
 // ─── ARM CONSTANTS — placeholders, all TODOs below need real hardware values ───
 // Mechanism: one linear actuator lifts the scoop, one servo rotates at the
@@ -91,6 +99,15 @@ struct PIDState { float integral; float prev_error; };
 #define ARM_SERVO_MOVE_MS     600   // time to let the servo finish travelling before continuing
 #define ARM_SERVO_HOLD_MS     500   // how long to hold at the dump angle before returning home
 
+// ─── ULTRASONIC CONSTANTS ───
+// HC-SR04 datasheet range is 2cm-4m with a ~15° detection cone.
+#define ULTRASONIC_TIMEOUT_US       30000   // ~5m round trip @343m/s; abandon the read if no echo
+#define ULTRASONIC_MIN_RANGE_M         0.02f
+#define ULTRASONIC_MAX_RANGE_M         4.0f
+#define ULTRASONIC_FIELD_OF_VIEW_RAD   0.26f   // ~15 degrees
+#define ULTRASONIC_DETECT_THRESHOLD_CM 30.0f   // "object right in front" cutoff — tune on the bench
+#define ULTRASONIC_READ_INTERVAL_MS   100      // 10Hz
+
 // ─── micro-ROS objects ───
 rcl_node_t node;
 rclc_support_t support;
@@ -104,6 +121,8 @@ rcl_publisher_t odom_pub;
 rcl_publisher_t motor_events_pub;
 rcl_publisher_t arm_events_pub;
 rcl_publisher_t imu_pub;
+rcl_publisher_t ultrasonic_pub;
+rcl_publisher_t obstacle_events_pub;
 
 geometry_msgs__msg__Twist cmd_vel_msg;
 std_msgs__msg__String estop_msg;
@@ -112,6 +131,8 @@ std_msgs__msg__String motor_event_msg;
 std_msgs__msg__String arm_cmd_msg;
 std_msgs__msg__String arm_event_msg;
 sensor_msgs__msg__Imu imu_msg;
+sensor_msgs__msg__Range range_msg;
+std_msgs__msg__String obstacle_event_msg;
 
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(PCA9685_I2C_ADDR);
 MPU6050 imu(MPU6050_I2C_ADDR);
@@ -125,6 +146,7 @@ volatile long enc_left  = 0;
 volatile long enc_right = 0;
 volatile unsigned long last_cmd_vel_ms = 0;
 volatile bool arm_trigger_pickup = false;
+volatile bool object_detected = false;   // true when something is within ULTRASONIC_DETECT_THRESHOLD_CM
 
 // ─── Odometry state ───
 float odom_x     = 0.0f;
@@ -216,6 +238,58 @@ static void publish_arm_event(const char* msg) {
     arm_event_msg.data.size = strlen(msg);
     arm_event_msg.data.capacity = strlen(msg) + 1;
     rcl_publish(&arm_events_pub, &arm_event_msg, NULL);
+}
+
+static void publish_obstacle_event(const char* msg) {
+    obstacle_event_msg.data.data = (char*)msg;
+    obstacle_event_msg.data.size = strlen(msg);
+    obstacle_event_msg.data.capacity = strlen(msg) + 1;
+    rcl_publish(&obstacle_events_pub, &obstacle_event_msg, NULL);
+}
+
+// ─── Ultrasonic task — Core 0 ───
+// Polls the HC-SR04 at ULTRASONIC_READ_INTERVAL_MS. pulseIn() blocks the
+// calling task for up to ULTRASONIC_TIMEOUT_US, so this runs in its own
+// low-priority task rather than inline in loop().
+void ultrasonic_task(void* pvParameters) {
+    pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
+    pinMode(ULTRASONIC_ECHO_PIN, INPUT);
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+
+    bool was_detected = false;
+
+    while (true) {
+        // 10us trigger pulse per HC-SR04 datasheet
+        digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+        delayMicroseconds(2);
+        digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
+        delayMicroseconds(10);
+        digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+
+        unsigned long echo_us = pulseIn(ULTRASONIC_ECHO_PIN, HIGH, ULTRASONIC_TIMEOUT_US);
+
+        // echo_us == 0 means pulseIn timed out — no echo (out of range / no object)
+        bool in_range = echo_us > 0;
+        float distance_cm = echo_us / 58.0f;   // round-trip time -> cm
+
+        bool detected = in_range && distance_cm <= ULTRASONIC_DETECT_THRESHOLD_CM;
+
+        portENTER_CRITICAL(&mux);
+        object_detected = detected;
+        portEXIT_CRITICAL(&mux);
+
+        if (detected != was_detected) {
+            publish_obstacle_event(detected ? "OBSTACLE_DETECTED" : "OBSTACLE_CLEAR");
+            was_detected = detected;
+        }
+
+        if (in_range) {
+            range_msg.range = distance_cm / 100.0f;   // publish in meters
+            rcl_publish(&ultrasonic_pub, &range_msg, NULL);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(ULTRASONIC_READ_INTERVAL_MS));
+    }
 }
 
 // ─── Arm task — Core 0 ───
@@ -387,6 +461,15 @@ void setup() {
     imu_msg.angular_velocity_covariance[0]   = -1.0;
     imu_msg.linear_acceleration_covariance[0] = -1.0;
 
+    // Fields that never change across reads
+    range_msg.header.frame_id.data     = (char*)"ultrasonic";
+    range_msg.header.frame_id.size     = 10;
+    range_msg.header.frame_id.capacity = 11;
+    range_msg.radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
+    range_msg.field_of_view  = ULTRASONIC_FIELD_OF_VIEW_RAD;
+    range_msg.min_range      = ULTRASONIC_MIN_RANGE_M;
+    range_msg.max_range      = ULTRASONIC_MAX_RANGE_M;
+
     // micro-ROS init
     allocator = rcl_get_default_allocator();
     rclc_support_init(&support, 0, NULL, &allocator);
@@ -416,6 +499,12 @@ void setup() {
     rclc_publisher_init_default(&imu_pub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
         "/imu/data");
+    rclc_publisher_init_default(&ultrasonic_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
+        "/ultrasonic/range");
+    rclc_publisher_init_default(&obstacle_events_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/obstacle_events");
 
     // Executor
     rclc_executor_init(&executor, &support.context, 3, &allocator);
@@ -426,9 +515,10 @@ void setup() {
     rclc_executor_add_subscription(&executor, &arm_cmd_sub, &arm_cmd_msg,
         &arm_cmd_callback, ON_NEW_DATA);
 
-    // Pin motor task to Core 1, arm task to Core 0 (mostly idle in vTaskDelay)
+    // Pin motor task to Core 1, arm + ultrasonic tasks to Core 0 (mostly idle in vTaskDelay)
     xTaskCreatePinnedToCore(motor_task, "MOTOR", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(arm_task, "ARM", 4096, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(ultrasonic_task, "ULTRASONIC", 2048, NULL, 1, NULL, 0);
 }
 
 // ─── loop — Core 0 ───
