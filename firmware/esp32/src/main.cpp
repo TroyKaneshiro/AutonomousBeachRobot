@@ -36,33 +36,32 @@
 struct PIDState { float integral; float prev_error; };
 
 // ─── PIN DEFINITIONS ───
-#define MOTOR_L_PWM   25
-#define MOTOR_L_DIR   26
-#define MOTOR_R_PWM   27
-#define MOTOR_R_DIR   14
-#define ENC_L_A       4
-#define ENC_L_B       13
-#define ENC_R_A       32
-#define ENC_R_B       33
+#define MOTOR_R_PWM   25
+#define MOTOR_R_DIR   26
+#define MOTOR_L_PWM   27
+#define MOTOR_L_DIR   14
+#define ENC_R_A       2
+#define ENC_R_B       18
+#define ENC_L_A       32
+#define ENC_L_B       33
 
 // HC-SR04 ultrasonic — front-facing object detection.
 // NOTE: GPIO34/35 are input-only on the ESP32 (no output driver), so TRIG
 // cannot physically be wired to 35 as originally planned. TRIG moved to the
 // free GPIO23; ECHO stays on 34 since input-only is fine for an input pin.
-#define ULTRASONIC_TRIG_PIN   23
+#define ULTRASONIC_TRIG_PIN   15
 #define ULTRASONIC_ECHO_PIN   34
 
 // ─── ARM CONSTANTS — placeholders, all TODOs below need real hardware values ───
 // Mechanism: one linear actuator lifts the scoop, one servo rotates at the
 // top to dump the load backward, then both retract/re-home.
-// TODO(partner): confirm actuator driver type. Assumed here: a PWM+DIR
-// H-bridge, same pattern as the drive motors (Cytron-style). If it's a
-// relay-reversing or L298N-style driver the DIR polarity below may need to
-// flip, and if it has built-in limit switches wire them to ARM_ACT_LIMIT_*.
-#define ARM_ACT_PWM           16   // linear actuator drive PWM
-#define ARM_ACT_DIR           17   // linear actuator direction (HIGH = extend/lift, TODO confirm)
-#define ARM_ACT_LIMIT_TOP     18   // optional top limit switch, INPUT_PULLUP, active LOW
-#define ARM_ACT_LIMIT_BOTTOM   5   // optional bottom limit switch, INPUT_PULLUP, active LOW
+// Actuator is a plain two-wire DC linear actuator (just motor leads, no
+// built-in limit switches or position feedback) driven through a PWM+DIR
+// H-bridge, same pattern as the drive motors (Cytron-style). Stroke length
+// is bounded purely by time (ARM_LIFT_TIME_MS / ARM_LOWER_TIME_MS below) —
+// there's no feedback to end the stroke early.
+#define ARM_ACT_PWM           12  // linear actuator drive PWM
+#define ARM_ACT_DIR           13   // linear actuator direction (HIGH = extend/lift, TODO confirm)
 
 // One shared I2C bus carries both the dump-gate servo driver (PCA9685) and
 // the MPU-6050 IMU — this board wires SDA to GPIO21 and SCL to GPIO22.
@@ -85,10 +84,10 @@ struct PIDState { float integral; float prev_error; };
 #define IMU_PUBLISH_INTERVAL_MS   10   // 100Hz, matches terrain_monitor's calibration window
 
 #define ARM_ACT_SPEED        200   // 0-255 PWM — placeholder, tune once actuator specs are known
-// TODO(partner): these two are a time-based fallback for actuators with no
-// limit switches/position feedback wired yet. Once ARM_ACT_LIMIT_TOP/BOTTOM
-// are physically wired, they end the stroke early and these just become a
-// timeout safety net — measure real travel time and set them a bit above it.
+// No limit switches — these are the sole stop mechanism for the actuator
+// stroke. TODO(partner): measure real full-travel time on the bench and set
+// these a little above it (enough margin to guarantee full extend/retract,
+// not so much that the actuator stalls against its end stop for a long time).
 #define ARM_LIFT_TIME_MS     3000
 #define ARM_LOWER_TIME_MS    3000
 
@@ -293,15 +292,13 @@ void ultrasonic_task(void* pvParameters) {
 }
 
 // ─── Arm task — Core 0 ───
-// Non-PID: the actuator sequence is open-loop (time or limit-switch
-// bounded), so it doesn't need the tight 100Hz loop the drivetrain does.
+// Non-PID: the actuator sequence is open-loop (time-bounded, no position
+// feedback), so it doesn't need the tight 100Hz loop the drivetrain does.
 void arm_task(void* pvParameters) {
     arm_servo_write(ARM_SERVO_HOME_DEG);
 
     pinMode(ARM_ACT_PWM, OUTPUT);
     pinMode(ARM_ACT_DIR, OUTPUT);
-    pinMode(ARM_ACT_LIMIT_TOP, INPUT_PULLUP);
-    pinMode(ARM_ACT_LIMIT_BOTTOM, INPUT_PULLUP);
     analogWrite(ARM_ACT_PWM, 0);
 
     while (true) {
@@ -318,7 +315,6 @@ void arm_task(void* pvParameters) {
             unsigned long start = millis();
             bool aborted = false;
             while (millis() - start < ARM_LIFT_TIME_MS) {
-                if (digitalRead(ARM_ACT_LIMIT_TOP) == LOW) break;
                 portENTER_CRITICAL(&mux);
                 aborted = estop;
                 portEXIT_CRITICAL(&mux);
@@ -342,7 +338,6 @@ void arm_task(void* pvParameters) {
                 analogWrite(ARM_ACT_PWM, ARM_ACT_SPEED);
                 start = millis();
                 while (millis() - start < ARM_LOWER_TIME_MS) {
-                    if (digitalRead(ARM_ACT_LIMIT_BOTTOM) == LOW) break;
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
                 analogWrite(ARM_ACT_PWM, 0);
